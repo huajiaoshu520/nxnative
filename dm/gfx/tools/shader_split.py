@@ -862,14 +862,15 @@ def unity_code_blobs(o):
 def unity_compute(x, base, trees):
     """ComputeShader objects (class 72) of a serialized file → [(where, 'cs', control, code)]: each kernel variant's code is a program code with one stage, compute (Monster Train 2,
     Unity 2022.3: the post-processing stack's 12 compute shaders, its colour grading LUT baker among them, in Data/sharedassets2.assets). Raises NoTree in the first pass, so the file is scanned
-    again with the borrowed trees and unityfs.py's layouts; in the second pass a class still without a tree is reported and its kernels left out, as before compute shaders were read"""
+    again with the borrowed trees and unityfs.py's layouts; in the second pass a class still without a tree is reported and its kernels left out, as before compute shaders were read.
+    Unity 2022.3 lists a kernel's variants in uniqueVariants; Unity 2020.3 keys them by keyword set in variantMap (AI: THE SOMNIUM FILES - nirvanA Initiative's bundles, whose type trees say so)"""
     import unityfs
     out = []
     try:
         for cid, pid, o in unityfs.serialized_objects(x, COMMON, {unityfs.CLASS_COMPUTE_SHADER}, trees):
             for v in o['variants']:
                 for k in v['kernels']:
-                    for i, u in enumerate(k['uniqueVariants']):
+                    for i, u in enumerate(k['uniqueVariants'] if 'uniqueVariants' in k else [p['second'] for p in k['variantMap']]):
                         where = f'{base}#{o["m_Name"]}#{k["name"]}.{i}'
                         out.extend((where, st, ctl, cd) for st, ctl, cd in unity_program(u['code'], where, 'cs'))
     except unityfs.NoTree as e:

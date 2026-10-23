@@ -7,6 +7,7 @@
 # Environment IOSOUT=dir: the same MSL also goes through dm/ios/tools/ios_metal.compile to produce an iphoneos metallib + reflection (chain_metal records the iOS compile convention)
 # Final summary: success / failure counts and the distribution of reasons; distribution of driver segment read offsets (those outside the range the replay layer can fill are listed separately)
 import ast, inspect, os, re, sys, json, struct, hashlib, shutil, subprocess, tempfile, collections, threading, concurrent.futures as cf
+import dmsh_geometry
 DM_ROOT = os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work')   # Workspace root (game files, build outputs and run artifacts are all under it)
 HOME = os.path.expanduser('~')
 dm_dir, out = sys.argv[1:3]; want = set(sys.argv[3:]); cache_root = out
@@ -106,6 +107,7 @@ def cache_outputs(key, digest, cached=False):
             ('ios', IOSOUT, [key + '_b.metallib', key + '_b.json'])):
         if not directory: continue
         base = os.path.join(root, label) if cached else directory
+        names += [key + s + ext for s in ('_bg0', '_bg1', '_bg2', '_bg3', '_bg4', '_bgv') for ext in ('.metallib', '.json', '.metal') if label == 'mac' or ext != '.metal']
         found = [n for n in names if os.path.exists(os.path.join(base, n))]
         if key + '_b.metallib' not in found or key + '_b.json' not in found: return None
         files[label] = found
@@ -447,7 +449,8 @@ def reflect(key, stage, msl, res):
     for m in re.finditer(r'^\s*(.+?)\s+(\w+)\s*\[\[id\((\d+)\)\]\];', body.group(1) if body else '', re.M):
         ty, nm, aid = m.group(1).strip(), m.group(2), int(m.group(3))
         e = {'msl_name': nm, 'msl_type': ty, 'arg_id': aid}
-        if nm == 'support_buffer': e.update(kind='support')
+        if nm in dmsh_geometry.HELPERS: e.update(kind='geometry', reg=dmsh_geometry.HELPERS[nm])
+        elif nm == 'support_buffer': e.update(kind='support')
         elif re.fullmatch(r'[a-z]+_c(\d+)', nm):
             n = int(re.fullmatch(r'[a-z]+_c(\d+)', nm).group(1))
             e.update(kind='cbuf', reg=n - 3) if 3 <= n <= 16 else e.update(kind='c1' if n == 1 else 'drvcb', bank=n)
@@ -512,7 +515,7 @@ def unfillable(dr):
 
 RULES = []   # MSL rewrite rules attached by shader name (function, applicability test); the former dark-range remap toe has been removed (back to the original Switch brightness)
 # The first-stage code fingerprint does not include dmsh_fetch.py; readable-tile variants get a separate second-stage cache keyed on the generated MSL.
-CODE_FP = hashlib.sha256(source_without_rule_bodies().encode() + b''.join(b'\0' + open(m.__file__, 'rb').read() for m in (dmsh_chain,) + ((ios_metal,) if IOSOUT else ()))).hexdigest()
+CODE_FP = hashlib.sha256(source_without_rule_bodies().encode() + b''.join(b'\0' + open(m.__file__, 'rb').read() for m in (dmsh_chain, dmsh_geometry) + ((ios_metal,) if IOSOUT else ()))).hexdigest()
 TOOL_FP = tool_fingerprint().encode()
 
 _CAST = ('as_type<int>(', 'as_type<uint>(')
@@ -723,16 +726,71 @@ def _ep_drop(x, ids):   # OpEntryPoint without the given interface IDs: model, f
     y[0] = len(y) << 16 | (x[0] & 0xffff)
     return y
 
+def geometry_finish(key, w, j, c1):
+    """Build all five input-topology variants; the draw selects one at replay.
+    Resources retain logical NVN stage 2 even though Metal executes a kernel.
+    """
+    code = open(j['code'], 'rb').read()
+    w2, w3, w4 = struct.unpack_from('<3I', code, 8)
+    nv, inv, topology = w4 & 4095, w2 >> 24, w3 >> 24 & 15
+    if topology not in (1, 6, 7) or not nv or not inv:
+        return 'geometry failed', 'invalid output declaration', None
+    nidx = nv * 2  # one restart after every emitted vertex, including incomplete strips
+    jobs = [{**j, 'key': key + '_g' + str(t), 'geometry_topology': t} for t in range(5)]
+    jp = os.path.join(w, key + '_geometry.json'); atomic_json(jp, jobs)
+    rx = subprocess.run([XLATE, jp, w], capture_output=True, text=True)
+    if rx.returncode: return 'geometry failed', rx.stderr.strip()[:160], None
+    base = None
+    for t, job in enumerate(jobs):
+        k = job['key']; spv = os.path.join(w, k + '.spv')
+        dmsh_geometry.flatten_sets(spv)
+        r = subprocess.run(['spirv-cross', *XC, spv], capture_output=True, text=True)
+        if r.returncode: return 'geometry MSL failed', r.stderr.strip()[:160], None
+        src = dmsh_geometry.topology_pointer(r.stdout)
+        res = json.load(open(os.path.join(w, k + '.res.json')))
+        refl = {'key': key + '_bg' + str(t), 'route': 'B', 'chain': CHAIN, 'dm_ctl': key,
+                'source': f'{loc[key][0]}#{loc[key][1]}', 'pc_paired': pc_of[key], 'stage': 'gs',
+                'entry': 'main0', 'msl_entry_kind': 'kernel', 'threadgroup_size': [32, 1, 1],
+                'geometry': {'vertices': nv, 'invocations': inv, 'output': topology,
+                             'stride': res['geometry_stride'], 'index_stride': nidx},
+                'c1': c1.hex(), 'notes': res['notes'], 'drv_reads': drv_reads(src), 'drv_unfillable': [],
+                'bindings': reflect(key, 'gs', src, res), 'vertex_inputs': [], 'raster': {}}
+        def save(suffix, text, meta):
+            path = os.path.join(out, key + suffix + '.metal'); open(path, 'w').write(text)
+            MTL.compile('mac', path, os.path.join(out, key + suffix + '.metallib'))
+            atomic_json(os.path.join(out, key + suffix + '.json'), dict(meta, chain_metal=MAC_RECORD))
+            if IOSOUT:
+                MTL.compile('ios', path, os.path.join(IOSOUT, key + suffix + '.metallib'))
+                atomic_json(os.path.join(IOSOUT, key + suffix + '.json'), dict(meta, chain_metal=ios_metal.RECORD))
+        save('_bg' + str(t), src, refl)
+        if t == 0:
+            base = {**refl, 'key': key + '_b'}
+            save('_b', src, base)
+            spv = os.path.join(w, k + '.reader.spv'); dmsh_geometry.flatten_sets(spv)
+            r = subprocess.run(['spirv-cross', *XC, spv], capture_output=True, text=True)
+            if r.returncode: return 'geometry reader failed', r.stderr.strip()[:160], None
+            reader = vs_layer(vs_init(r.stdout))
+            analysis, full = vs_depth(reader)
+            meta = {'key': key + '_bgv', 'route': 'B', 'chain': CHAIN, 'dm_ctl': key,
+                    'stage': 'vs', 'entry': 'main0', 'entry_z': 'main0_z', 'msl_entry_kind': 'vertex',
+                    'geometry_reader': True, 'geometry_output': topology, 'c1': '', 'notes': [], 'drv_reads': {}, 'drv_unfillable': [],
+                    'bindings': reflect(key, 'vs', analysis, {'sbufs': []}), 'vertex_inputs': [], 'raster': {}}
+            save('_bgv', full, meta)
+    return 'ok', '', base
+
+
 def finish(key, w, j, c1):
     name, k = loc[key]
     msl = os.path.join(w, key + '.metal'); lib = os.path.join(out, key + '_b.metallib')
-    if j['stage'] == 'gs':   # a geometry shader that only picks the layer is folded into the vertex shader by the host (see gs_slice); any other has no Metal counterpart and fails below
+    if j['stage'] == 'gs':   # keep the layer-only fold; other geometry runs as compute
         s = gs_slice(os.path.join(w, key + '.spv'))
         if s:
             refl = {'key': key + '_b', 'route': 'B', 'chain': CHAIN, 'dm_ctl': key, 'source': f'{name}#{k}', 'pc_paired': pc_of[key], 'stage': 'gs', 'gs_slice': s,
                     'notes': [], 'drv_reads': '', 'drv_unfillable': [], 'bindings': []}   # no library: the host draws with the vertex shader's layer entry points
             write_refl(key, refl)
             return 'ok', '', refl
+        try: return geometry_finish(key, w, j, c1)
+        except (ValueError, subprocess.CalledProcessError) as e: return 'geometry failed', str(e)[:160], None
     if j['stage'] == 'vs': spv_single_lane(os.path.join(w, key + '.spv'))   # one-lane subgroups (see spv_single_lane)
     r = subprocess.run(['spirv-cross', *XC, os.path.join(w, key + '.spv'), '--output', msl], capture_output=True, text=True)
     if r.returncode: return 'MSL failed', r.stderr.strip()[:160], None
@@ -755,7 +813,9 @@ def finish(key, w, j, c1):
         if pad: open(msl, 'w').write(src)
     lay = None
     if j['stage'] == 'vs':   # the two depth-convention entry points (see vs_depth); the analysis below uses the source with only main0
+        capture = dmsh_geometry.capture(src)
         src, full = vs_depth(src)
+        full += capture
         if j.get('tf'): full += vs_tf(src, j['tf'])   # transform feedback capture (see vs_tf)
         plain = full
         full, lay = vs_layer_entry(full)   # layer entry points for a slice-writing geometry shader (see vs_layer_entry)
@@ -776,7 +836,7 @@ def finish(key, w, j, c1):
     entry = re.search(r'(vertex|fragment|kernel)\s+\S+\s+(\w+)\s*\(', src)
     dr = drv_reads(src)
     refl = {'key': key + '_b', 'route': 'B', 'chain': CHAIN, 'dm_ctl': key, 'source': f'{name}#{k}', 'pc_paired': pc_of[key], 'stage': j['stage'],
-            'entry': entry.group(2) if entry else 'main0', 'msl_entry_kind': entry.group(1) if entry else None, **({'entry_z': 'main0_z'} if j['stage'] == 'vs' else {}),
+            'entry': entry.group(2) if entry else 'main0', 'msl_entry_kind': entry.group(1) if entry else None, **({'entry_z': 'main0_z', 'entry_geometry_capture': 'main0_gs'} if j['stage'] == 'vs' else {}),
             **({'entry_tf': 'main0_tf', 'tf_strides': [e[2] if e else 0 for e in j['tf']]} if j.get('tf') else {}),
             **({'entry_layer': 'main0_l', 'entry_layer_z': 'main0_lz', 'layer_from': lay} if lay else {}), **({'entry_u': 'main0_u'} if fu else {}),
             'threadgroup_size': j.get('local'), 'c1': c1.hex(), 'notes': res['notes'] + (['not in the answer table, queries use defaults'] if j.get('no_facts') else []), 'drv_reads': dr, 'drv_unfillable': unfillable(dr),

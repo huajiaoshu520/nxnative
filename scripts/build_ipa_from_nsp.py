@@ -1546,6 +1546,9 @@ def main(args=None):
 
 
 def cli(argv):   # returns the exit code: 0 done, 1 error, 130 interrupted
+    # main points DM_GAMES_DIR (and DM_GAMES_FIRST) at this run's provisional or derived profile for its tools. Spyder runs the next F5 in the same process, where the game lookup
+    # (game.py by_title) then found that profile and took it for a registered one: ASTRAL CHAIN's second run skipped every provisional step and stopped with no dmsh_chain.h
+    environ = dict(os.environ)
     try:
         main(parse_args(argv))
     except BuildError as e:
@@ -1558,6 +1561,8 @@ def cli(argv):   # returns the exit code: 0 done, 1 error, 130 interrupted
         raise
     finally:
         PROG.close(ok=False)   # stop the ticker
+        for k in os.environ.keys() - environ.keys(): del os.environ[k]
+        os.environ.update(environ)
     return 0
 
 

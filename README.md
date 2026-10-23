@@ -48,7 +48,7 @@ Needs iOS / iPadOS 26 or later on an iPhone 15 Pro or newer (A17 Pro chip or lat
 | ![Digimon Story Cyber Sleuth: Complete Edition](docs/images/digimon-story-cyber-sleuth.jpg)<br>Digimon Story Cyber Sleuth: Complete Edition<br><sub>IPA ~5 GB</sub> | ![Animal Crossing: New Horizons](docs/images/animal-crossing-new-horizons.jpg)<br>Animal Crossing: New Horizons<br><sub>IPA ~10.5 GB with update 3.0.3</sub> |
 | ![DRAGON QUEST VII Reimagined](docs/images/dragon-quest-vii-reimagined.jpg)<br>DRAGON QUEST VII Reimagined<br><sub>IPA ~5.9 GB with update 1.2.0</sub> | ![FINAL FANTASY RESONANCE](docs/images/final-fantasy-resonance.jpg)<br>FINAL FANTASY RESONANCE<br><sub>IPA ~10 GB · 60 fps (30 on Switch) with update 1.0.1</sub> |
 | ![Luigi's Mansion 3](docs/images/luigis-mansion-3.jpg)<br>Luigi's Mansion 3<br><sub>IPA ~7.5 GB · 60 fps (30 on Switch) with update 1.4.0</sub> | ![AI: THE SOMNIUM FILES](docs/images/ai-the-somnium-files.jpg)<br>AI: THE SOMNIUM FILES<br><sub>IPA ~8.3 GB</sub> |
-| ![ANIMAL WELL](docs/images/animal-well.png)<br>ANIMAL WELL<br><sub>IPA ~54 MB · update 1.0.10</sub> | |
+| ![ANIMAL WELL](docs/images/animal-well.png)<br>ANIMAL WELL<br><sub>IPA ~54 MB · update 1.0.10</sub> | ![AI: THE SOMNIUM FILES - nirvanA Initiative](docs/images/ai-the-somnium-files-nirvana-initiative.jpg)<br>AI: THE SOMNIUM FILES - nirvanA Initiative<br><sub>IPA ~11.6 GB · update 1.0.2</sub> |
 
 ## Pack an IPA
 

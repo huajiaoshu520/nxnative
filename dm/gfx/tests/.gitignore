@@ -44,6 +44,8 @@ t_ub
 t_ub.dSYM/
 t_vbuf
 t_vbuf.dSYM/
+t_geometry
+t_geometry.dSYM/
 t_dirty_race
 t_dirty_race.dSYM/
 t_vin
