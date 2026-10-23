@@ -1,0 +1,49 @@
+name: Sync upstream
+
+on:
+  schedule:
+    # Every hour at minute 17 (UTC).
+    - cron: '17 * * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sync-upstream.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'huajiaoshu520/nxnative'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # Use GitHub's fork sync API: merge upstream without force-pushing
+      # or discarding fork commits. Conflicts fail the run for manual review.
+      - name: Merge upstream into main
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh api --method POST "repos/$GH_REPO/merge-upstream" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -f branch=main > sync-result.json; then
+            echo "::error::Upstream sync failed. Check for merge conflicts, branch protection, or token permissions. No force push was attempted."
+            exit 1
+          fi
+          cat sync-result.json
+          {
+            echo '### Upstream sync'
+            echo 'Source: seedds/nxnative (upstream default branch)'
+            echo 'Target: huajiaoshu520/nxnative main'
+            echo
+            jq -r '.message' sync-result.json
+          } >> "$GITHUB_STEP_SUMMARY"
