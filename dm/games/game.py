@@ -84,6 +84,10 @@ def by_title(tid):
     return next((g for g in all_games() if g.title_id == tid), None)
 
 
+def by_build(main_id):   # the profile whose build rows register this main build ID (a release of the same build under another title ID: the NSP script's same_build)
+    return next((g for g in all_games() if any(b.get('main') == main_id for b in g.builds().values())), None)
+
+
 def header(g):
     """the host's game_profile.h: the profile constants the host uses, as macros"""
     q = lambda s: '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'

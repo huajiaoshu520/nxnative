@@ -44,7 +44,8 @@ HLE_FORCE("_ZN5movie9Extractor13SetDataSourceEPKc", "movie demuxer: the host doe
 
 #define MD_NIN 4                 // input buffers
 #define MD_INCAP (4u << 20)      // 4 MB per input buffer (a 1080p VP9 packet is far smaller)
-#define MD_NOUT 64               // output slots, at most (an audio decoder's count)
+#define MD_NOUT 64               // output slots, at most (a Vorbis decoder's count)
+#define MD_NOUT_AAC 32           // an AAC decoder's output slots
 #define MD_NOUT_VIDEO 16         // a video decoder's output slots
 #define MD_NO_INPUT 0x1011       // SDK: no free input
 #define MD_NO_OUTPUT 0x100e      // SDK: no output ready
@@ -62,7 +63,7 @@ HLE_FORCE("_ZN5movie9Extractor13SetDataSourceEPKc", "movie demuxer: the host doe
 
 typedef struct {
     pthread_mutex_t mu;                          // guards the queues and slots below
-    int type, fmt, mode, nout;                   // nout: output slots, MD_NOUT_VIDEO for video, MD_NOUT for audio (see the constructor)
+    int type, fmt, mode, nout;                   // nout: output slots, MD_NOUT_VIDEO for video, MD_NOUT_AAC for AAC, MD_NOUT for Vorbis (see the constructor)
     void **evc;                                  // the client's DecoderEvents: {input, output, format, error} EventType*, read at signal time as the SDK does (md_event)
     void *ev[4];                                 // the entries that were events at registration: used when the client's entry no longer is one (by Metroid Dread's second movie its struct had been overwritten and Start crashed signalling)
     int w, h, fmt_sent, started, in_eos;          // in_eos: an end-of-stream packet was sent; no input until Flush / Stop (h_movie_AcqIn)
@@ -476,18 +477,21 @@ HLE_FORCE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11De
     mdec_t *d = calloc(1, sizeof *d);
     pthread_mutex_init(&d->mu, NULL); pthread_mutex_init(&d->dmu, NULL); pthread_mutex_init(&d->wmu, NULL); pthread_cond_init(&d->wcv, NULL);
     d->type = type; d->fmt = fmt; d->mode = mode;
-    // An audio decoder keeps 64 outputs (about 1.4 s of AAC or Vorbis), a video decoder 16. The host decodes far faster than the Switch, and a player that feeds its decoders in file order
+    // A Vorbis decoder keeps 64 outputs, an AAC decoder 32 (about 0.7 s), a video decoder 16. The host decodes far faster than the Switch, and a player that feeds its decoders in file order
     // stops at the first track with no free input. DRAGON QUEST XI S's player fills every track before it plays (IsPreDecodingCompleted: one output queued on each, polled once a frame),
     // while its render thread's first fetch takes every decoded picture and shows the newest. With 8 audio outputs, both audio tracks were full before 240 ms of video was decoded: the
     // extractor waited for an audio input, no picture followed the ones that fetch took, and the opening movie never started (in about half the boots on the Mac: whichever of the poll and the fetch came first).
     // Unity 2022.3's movie player (Monster Train 2's intro, an MP4 of H.264 and AAC interleaved packet by packet) takes every output it is offered and starts playing once it holds about
     // half a second of audio: measured with 64 audio and 8 video slots, it starts holding 27 audio and 8 video outputs and peaks at 30 audio, close to 32 (8 audio slots hang it on a black
     // screen whatever the video count: 32 video slots did not help). An audio slot is a PCM buffer allocated when first used (MD_PCM_CAP, 128 KB), so 64 cost at most 8 MB.
+    // AAC no more than 32: Mario vs. Donkey Kong's movie player (1.0.1) keeps the outputs it holds in a ring of 32 entries per track (main+0xe93d4c: 0x200 bytes) and pushes with no
+    // bounds check (main+0xe94140), so with 64 the 33rd AAC output it took wrote its index and time over the next heap block, and the opening movie crashed in the heap's free a second in.
+    // The console's AAC decoder cannot offer more than 32, or the game would overflow there too
     // Video got 16 slots for Animal Crossing: New Horizons' in-flight movie (Movie/OpeningMovie.webm, VP9 1080p and Vorbis through movie::Extractor): its player also holds every output it is
     // offered (16 of 16 video, 59 of 64 audio), so how far its extractor gets ahead of the picture on screen is the video slots plus the 4 queued packets. With 8 that was 0.4 s, and the
     // audio behind the next video packet, whose clock the player follows, ran dry: 86 pictures in 25 s, a black screen with a loading icon. With 16 (or 32) all 1,960 play at 30 fps.
     // A video slot is allocated when first used, so the 8 more cost a greedy player 24 MB of NV12 at 1080p (64 MB as RGBA)
-    d->nout = audio ? MD_NOUT : MD_NOUT_VIDEO;
+    d->nout = !audio ? MD_NOUT_VIDEO : type == MD_TYPE_AAC ? MD_NOUT_AAC : MD_NOUT;
     for (int i = 0; i < MD_NIN; i++) { d->in[i] = malloc(MD_INCAP); d->infree[i] = i; }
     d->ninfree = MD_NIN;
     pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 1 << 20);
@@ -697,7 +701,15 @@ HLE_FORCE("_ZN5movie7Decoder21GetOutputBufferFormatEiPNS_9MediaDataE", "movie de
 HLE_FORCE("_ZN5movie7Decoder19GetOutputBufferSizeEPiS1_", "movie decoder: output buffer size (one NV12 frame)", int, h_movie_OutSize, void **self, int *size, int *mode) {
     mdec_t *d = md_of(self); if (!d) return 0x1000;
     if (!size || !mode) return 0x100b;
-    if (MD_AUDIO(d)) { *size = MD_PCM_CAP; *mode = d->mode; MD_TRACE(d, 11, "GetOutputBufferSize → %d (PCM)", *size); return 0; }
+    // AAC: one frame, 1024 samples per channel (2048 with SBR, object type 5 or 29 in the AudioSpecificConfig), which is what each output holds. Mario vs. Donkey Kong's player
+    // (1.0.1) makes its AudioOut buffers this size, decodes into them and appends each whole, advancing its audio clock by size / 4 samples (main+0xe92a74): with the 128 KB
+    // of a Vorbis bound every 4 KB AAC frame was played as 0.68 s, the clock crawled, the player stopped taking audio and the opening movie froze on its first second.
+    // Vorbis packets vary in length (a long block gives far more than a short one), so its outputs stay at the bound
+    if (MD_AUDIO(d)) {
+        int sbr = d->vhdr_n[0] > 0 && ((d->vhdr[0][0] >> 3) == 5 || (d->vhdr[0][0] >> 3) == 29);
+        *size = d->type == MD_TYPE_AAC && d->ch > 0 ? 1024 * (sbr ? 2 : 1) * d->ch * 2 : MD_PCM_CAP; *mode = d->mode;
+        MD_TRACE(d, 11, "GetOutputBufferSize → %d (PCM)", *size); return 0;
+    }
     int w, h, stride, slice; md_dims(d, &w, &h, &stride, &slice);
     *size = stride * slice * 3 / 2; *mode = d->mode;   // the SDK fills the second output with the decoder mode
     MD_TRACE(d, 11, "GetOutputBufferSize → %d (%d×%d)", *size, w, h);

@@ -62,6 +62,12 @@ CUTS = {
     (0x145d0c, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x145d78, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
   ],
+  # SDK 20.5.19 sdk 8bfebccd6f5c (BALL x PIT 1.293, Unity 6000.0.62f1): the same node area cut, for the same reason as Hollow Knight: Silksong's (Unity 6 takes all its memory through
+  # AllocateAddressRegion). The AddressRegionManager constructor is the SDK 20.5.22 build's above at the same offsets (sdk+0x145cfc, the limit at +0x145d0c, the occupied length at +0x145d78)
+  '8bfebccd6f5c1392597b364b9ab22a8d': [
+    (0x145d0c, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x145d78, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+  ],
   # Super Mario Galaxy 1.3.1 / Super Mario Galaxy 2 1.4.0 sdk (SDK 18.3.5, the same build in both): the same node area cut. Galaxy 2's movie player initializes its StandardAllocator with
   # virtual address memory (main+0x62c280: Initialize(nullptr, 384 MB)), which aborted at its CentralHeap::Init: a 256 MB alias region holds no region after a 1 GB node area.
   # The constructor is at sdk+0x13be3c (limit = alias start + 0x3fe00000 at +0x28, a unit heap of 0x30-byte nodes, the area then registered as occupied at +0x13bee0)

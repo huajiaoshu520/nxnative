@@ -2,6 +2,7 @@
 // For build and run see dm/gfx/tests/Makefile (make -C dm/gfx/tests).
 #include "../nvn/hle_nvn.c"
 uint64_t g_t0_ns;   // process start time from host main.c (used by hle_nvn's per-frame @t_s); unit test stub
+_Atomic uint64_t dm_present_ns;   // when the last present was made (hle_thread.c, DM_HITCH_DUMP); unit test stub
 #include "../tex/nvn_deswizzle.h"
 #include <time.h>
 void *front_metal_layer(void) { return NULL; }   // no window in unit tests: present only counts
