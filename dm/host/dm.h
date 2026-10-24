@@ -7,7 +7,7 @@
 #include <string.h>
 #include "game_profile.h"   // constants of the current game profile (generated from dm/games/<id>/game.tsv, chosen by the Makefile's GAME)
 
-#define MAX_MOD 8
+#define MAX_MOD 128   // the profile's modules (up to 8) and the NROs a game loads at run time (Super Smash Bros. Ultimate: 98)
 #define LOG(...) do { fprintf(stderr, "[dm] " __VA_ARGS__); fputc('\n', stderr); } while (0)
 #define die(...) do { LOG("FATAL " __VA_ARGS__); abort(); } while (0)
 
@@ -16,7 +16,7 @@ typedef struct { int64_t d_tag; union { uint64_t d_val, d_ptr; } d_un; } Elf64_D
 typedef struct { uint64_t r_offset, r_info; int64_t r_addend; } Elf64_Rela;
 #define ELF64_R_SYM(i) ((i) >> 32)
 #define ELF64_R_TYPE(i) ((i) & 0xffffffff)
-enum { DT_INIT = 12, DT_RELA = 7, DT_RELASZ = 8, DT_JMPREL = 23, DT_PLTRELSZ = 2, DT_SYMTAB = 6, DT_STRTAB = 5,
+enum { DT_INIT = 12, DT_FINI = 13, DT_RELA = 7, DT_RELASZ = 8, DT_JMPREL = 23, DT_PLTRELSZ = 2, DT_SYMTAB = 6, DT_STRTAB = 5,
        DT_INIT_ARRAY = 25, DT_INIT_ARRAYSZ = 27, DT_RELRSZ = 35, DT_RELR = 36 };
 enum { R_AARCH64_ABS64 = 257, R_AARCH64_GLOB_DAT = 1025, R_AARCH64_JUMP_SLOT = 1026, R_AARCH64_RELATIVE = 1027 };
 #define ELF64_ST_BIND(i) ((i) >> 4)            // symbol binding: 0 = STB_LOCAL, 2 = STB_WEAK
@@ -40,6 +40,13 @@ typedef struct {
     unsigned nsym;
     uint32_t *symh; unsigned symh_mask;   // Name hash table of defined symbols (open addressing, stores symbol indices; for a duplicated name only the smallest index is kept = the first hit of a linear scan)
     uint64_t init, init_array, init_arraysz;   // init = DT_INIT (the module's _init: registers the DSO and runs this module's init_array)
+    uint64_t fini;             // DT_FINI (nn::ro::UnloadModule calls it)
+    // NRO modules (nn::ro, loader.c "NRO modules"): mapped at start like the others, but they take part in symbol lookups only between LoadModule and UnloadModule
+    int nro, loaded;           // loaded: the profile's modules always; an NRO while the game has it loaded
+    uint8_t sha256[32];        // an NRO's SHA-256 (what the game's NRR registers; LoadModule finds the module by the image it passes)
+    uint32_t nro_size;         // an NRO's file size (header +0x18), the bytes the hash covers
+    uint8_t *pristine; size_t pristine_len;   // an NRO's data and bss as rewritten, restored before each load after the first
+    unsigned loads;            // how many times the game loaded it
 } module_t;
 
 extern module_t g_mod[MAX_MOD];
@@ -51,6 +58,10 @@ extern pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
 
 void load_modules(const char *dir, const char **names, int n);
 void run_module_inits(void);
+module_t *nro_find(const uint8_t sha256[32]);   // the mapped NRO with this hash (loader.c)
+int nro_refused(const uint8_t sha256[32]);      // an NRO the pack refused (an online SDK, nro.tsv "refused")
+void nro_load(module_t *m);     // relocate an NRO against the loaded modules and bind the earlier modules' imports it defines (the caller runs its init)
+void nro_unload(module_t *m);   // take an NRO out of the lookups and bind the imports that pointed into it again
 void *module_sym(module_t *m, const char *name);
 int dm_sdk_major(void);   // SDK major version from the sdk module's version string (loader.c); 0 = unknown
 #define DM_SDK_OLD(major) ((major) > 0 && (major) <= 10)   // SDK 10 and older: NVN API 53, the shared-font address points at the TTF itself

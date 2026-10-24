@@ -12,6 +12,7 @@ uint64_t now_ns(void) { return 1000000000ull; }
 uint64_t dm_guest_frame(void) { return 0; }
 void dm_touch_set(const dm_touch *t, int n) { (void)t; (void)n; }
 int touch_fill_n(void *out, int max, uint64_t now) { (void)out; (void)max; (void)now; return 0; }
+int gesture_fill(void *out, int n, uint64_t now) { (void)out; (void)n; (void)now; return 0; }
 void dm_gfx_shot_at(long frame, const char *path) { (void)frame; (void)path; }
 void hle_bind_system_event(void *g, int autoclear) { (void)g; (void)autoclear; }
 void hle_signal_system_event(void *g) { g_signalled = g; g_signals++; }
@@ -107,9 +108,48 @@ static void t_npads(void) {
     CHECK(info[0] == 2 && info[1] == NPAD_HANDHELD, "handheld: the applet selects the handheld controller");
 }
 
+static dm_haptic_state vibration[DM_PLAYERS];
+static int vibration_calls;
+static void vibration_sink(dm_haptic_state s) { vibration[s.player] = s; vibration_calls++; }
+static void t_vibration(void) {
+    uint32_t h[2] = {0}, id = 0, info[2];
+    dm_vibration v = {0.25, 160, 0.5, 320}, got;
+    g_mode = 1; ids((uint32_t[]){0, 1, NPAD_HANDHELD}, 3); dm_pad_players(3);
+    CHECK(!h_hid_VibPermit() && !h_hid_VibHandles(h, 2, &id, STYLE_FULLKEY), "no sink: no vibration devices");
+    dm_haptics_init(vibration_sink, 1); dm_haptics_route(0, 1); dm_haptics_route(1, 1);
+    CHECK(h_hid_VibPermit() && h_hid_VibHandles(h, 2, &id, STYLE_FULLKEY) == 2, "two vibration motors available");
+    CHECK(h[0] == 3 && h[1] == 0x10003, "SDK vibration handle bytes: style 3, npad 0, motors 0 and 1");
+    CHECK(!h_hid_VibHandles(h, 2, &id, STYLE_HANDHELD), "wrong controller style gets no motors");
+    CHECK(!h_hid_VibHandles(h, 2, &(uint32_t){2}, STYLE_FULLKEY), "disconnected player gets no motors");
+    CHECK(h_hid_VibHandles(h, 1, &id, STYLE_FULLKEY) == 1, "handle count respects caller capacity");
+    h_hid_SendVib(&h[0], &v); h_hid_VibActual(&got, &h[0]);
+    CHECK(!memcmp(&got, &v, sizeof v) && vibration[1].motor[0].amplitude_low == 0, "game value is retained for the addressed player only");
+    h_hid_VibInfo(info, &h[1]); CHECK(info[0] == 1 && info[1] == 2, "right motor is a right LRA");
+    uint32_t invalid[] = {0, 0x20003, 0x1000003, 0x203};
+    vibration_calls = 0;
+    for (unsigned i = 0; i < sizeof invalid / sizeof *invalid; i++) h_hid_SendVib(&invalid[i], &v);
+    CHECK(!vibration_calls, "invalid style, motor, reserved byte and disconnected player are ignored");
+    dm_vibration pair[] = {{0.1, 160, 0, 320}, {0.6, 160, 0, 320}};
+    h_hid_SendVibs(h, pair, 2);
+    CHECK(vibration_calls == 1 && vibration[0].motor[0].amplitude_low == 0.1f && vibration[0].motor[1].amplitude_low == 0.6f, "HID batch publishes one complete pair");
+    h_hid_InitVib(&h[0]);
+    CHECK(dm_haptics_actual(0, 0).amplitude_low == 0 && dm_haptics_actual(0, 1).amplitude_low == 0.6f, "initializing one motor leaves its partner intact");
+    ids((uint32_t[]){0, NPAD_HANDHELD}, 2);
+    h_hid_SendVib(&h[0], &v);
+    CHECK(dm_haptics_actual(1, 0).amplitude_low == 0.25f, "one-player rumble reaches controllers whose input is merged into player 1");
+    dm_haptics_route(0, 0);
+    CHECK(h_hid_VibHandles(h, 2, &id, STYLE_FULLKEY) == 2, "merged controller supplies rumble when player 1 has no physical output");
+    g_mode = 0; id = NPAD_HANDHELD;
+    CHECK(h_hid_VibHandles(h, 2, &id, STYLE_HANDHELD) == 2 && h[0] == 0x2004 && h[1] == 0x12004, "handheld SDK vibration handles");
+    CHECK(!vib_targets(3), "old docked handle is not valid in handheld mode");
+    dm_haptics_route(1, 0);
+    CHECK(!h_hid_VibPermit(), "disconnecting the last output disables vibration");
+}
+
 int main(void) {
     t_slots();
     t_npads();
+    t_vibration();
     printf("hid players: %d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

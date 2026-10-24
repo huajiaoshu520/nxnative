@@ -17,6 +17,10 @@ x0=… x28=…
 - When the frame-pointer backtrace is empty, the stack scan's negative offsets (below `sp`) show the return addresses of the calls the crashing function made last.
 - `[dm] *xN:` lines show the first six words each register points at (read safely, so a bad pointer is skipped). A word inside a module prints as `main+…`: the first word of an object is its vtable, which names its class, and comparing it with the class's own vtable shows whether the object was destroyed (a base-class vtable) or rebuilt.
 
+## Pipeline compile waits
+
+Render-pipeline lookahead runs after the demanded pipeline is available and cached. It admits at most two predictions per scan and at most two scheduled or running predictions overall, so speculative attachment variants cannot create an unbounded compiler backlog ahead of real draws. Exact-key results are still recorded only when used; a full pending table may discard completed unused results, never running jobs. The independent startup warmer is not subject to this limit. A new pipeline can still stall on its intrinsic first-use compilation cost; compare pipeline-miss timings and live stacks with asset reads before attributing a hitch to loading. `dm/gfx/tests/t_pso_pending.m` exercises the queue and demand-before-prediction ordering with a gated fake compiler.
+
 ## Ghidra / objdump
 
 ```bash

@@ -21,11 +21,18 @@ from nso_asm import *   # the instruction encoders (B, ADRP, LDRX, ...), shared 
 
 src, outdir, NAME = sys.argv[1], sys.argv[2], sys.argv[3]
 d = open(src, 'rb').read()
-assert d[:4] == b'NSO0'
-flags = struct.unpack_from('<I', d, 0xc)[0]
-segs = [struct.unpack_from('<III', d, 0x10 + i * 0x10) for i in range(3)]
-bss = struct.unpack_from('<I', d, 0x3c)[0]
-csz = struct.unpack_from('<III', d, 0x60)
+if d[0x10:0x14] == b'NRO0':
+    # An NRO (a module the game loads at run time with nn::ro, Super Smash Bros. Ultimate's fighter code): the file is the image itself, each segment stored at its memory offset
+    # and uncompressed; +0x20 text, +0x28 ro, +0x30 data as {offset, size}, +0x38 bss size, +0x40 the build ID. Rewritten as an NSO of the same layout would be
+    flags, csz = 0, [struct.unpack_from('<II', d, 0x20 + 8 * i)[1] for i in range(3)]
+    segs = [(o, o, sz) for o, sz in (struct.unpack_from('<II', d, 0x20 + 8 * i) for i in range(3))]
+    bss = struct.unpack_from('<I', d, 0x38)[0]
+else:
+    assert d[:4] == b'NSO0'
+    flags = struct.unpack_from('<I', d, 0xc)[0]
+    segs = [struct.unpack_from('<III', d, 0x10 + i * 0x10) for i in range(3)]
+    bss = struct.unpack_from('<I', d, 0x3c)[0]
+    csz = struct.unpack_from('<III', d, 0x60)
 # Every jump between the patch area and the code is a B (±128 MB). A patch area appended after the image (with bss) cannot reach the code when it would start beyond 112 MB (leaving 16 MB for the patch area): Metroid Dread's main has about 1.8 GB of bss (the engine's static heap); Engage's main starts its patch area at about 103 MB and keeps it after the image.
 # The patch area then sits FRONT bytes before the module base (PATCH_OFF is negative), and the output file holds only text + ro + data (FILE_IMAGE_LEN) followed by the patch area; the loader supplies zero pages for bss and the key page (IMAGE_SIZE is the whole image).
 # The key page stays after bss (the patch area reaches it through ADRP, ±4 GB). Modules below the limit produce output byte-identical to before
@@ -559,10 +566,21 @@ def jump_offsets(insl, j, copy_first=False, far_base=False):
     else:
         if lo is None and far_base:   # nothing writes the base in the window
             tb = table_base(insl, k, rb, far=True)
+            if tb is None: tb = copied_base(insl, k, rb)   # built further back and copied on its way (below)
             if tb is None or tb + 4 * n > len(IMG): return None
             t = [tb + struct.unpack_from('<i', IMG, tb + 4 * i)[0] for i in range(n)]
             fa, fb = insl[0].address, insl[-1].address + 4
             return t if all(fa <= x < fb and x % 4 == 0 for x in t) else None
+    if page is None and far_base:
+        # The base was built further back and passed through other registers on its way (Super Smash Bros. Ultimate 13.0.5 main+0x2b74458: adrp x7 + add x7,x7,#0x40c
+        # 688 instructions before, then mov x30,x7 ... mov x7,x30 around a loop), so the walk back meets a mov. Follow the copies back to the function's start (copied_base);
+        # every target must be an instruction of this function. A function-wide search for the one adrp + add pair (table_cands) finds two for x7 there, the other a table of its own
+        # further on. Only the last attempt (far_base) gets here, i.e. only a site the rewriter could not handle before
+        tb = copied_base(insl, k, rb)
+        if tb is None or tb + 4 * n > len(IMG): return None
+        t = [tb + struct.unpack_from('<i', IMG, tb + 4 * i)[0] for i in range(n)]
+        fa, fb = insl[0].address, insl[-1].address + 4
+        return t if all(fa <= x < fb and x % 4 == 0 for x in t) else None
     if page is None: return None
     tb = page + lo
     return [tb + struct.unpack_from('<i', IMG, tb + 4 * i)[0] for i in range(n)]
@@ -577,6 +595,22 @@ def table_base(insl, k, rb, far=False):
         if not any(p.reg_name(r) == rb for r in w): continue
         if lo is None and p.mnemonic == 'add' and re.fullmatch(rf'{rb}, {rb}, #(0x[0-9a-f]+|\d+)', p.op_str): lo = int(p.op_str.split('#')[1], 0); continue
         if lo is not None and p.mnemonic == 'adrp' and p.op_str.startswith(rb + ','): return p.operands[1].imm + lo
+        return None
+    return None
+def copied_base(insl, k, rb):
+    """Address rb holds at insl[k] when it was built by adrp + add and then only copied between registers (mov xD, xS): the writer chain is walked back in address order to the
+    function's start, switching to the source register at each copy, through no call while the register followed is caller-saved; None for any other writer"""
+    canon = {'lr': 'x30', 'fp': 'x29'}   # capstone's reg_name calls x30 lr and x29 fp
+    lo, r = None, canon.get(rb, rb)
+    for p in reversed(insl[:k]):
+        if p.mnemonic in ('bl', 'blr') and num(r) <= 18: return None
+        _, w = p.regs_access()
+        # A write to wN zeroes the upper half of xN too; it is a clobber, never a copy of the 64-bit base.
+        if not any(canon.get(p.reg_name(x), p.reg_name(x)).replace('w', 'x', 1) == r for x in w): continue
+        ops = [canon.get(o, o) for o in p.op_str.split(', ')]
+        if lo is None and p.mnemonic == 'mov' and len(ops) == 2 and ops[0] == r and re.fullmatch(r'x\d+', ops[1]): r = ops[1]; continue
+        if lo is None and p.mnemonic == 'add' and len(ops) == 3 and ops[:2] == [r, r] and re.fullmatch(r'#(0x[0-9a-f]+|\d+)', ops[2]): lo = int(ops[2][1:], 0); continue
+        if lo is not None and p.mnemonic == 'adrp' and ops[0] == r: return p.operands[1].imm + lo
         return None
     return None
 def jump_adr_offsets(insl, j):

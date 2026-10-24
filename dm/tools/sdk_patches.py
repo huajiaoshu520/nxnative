@@ -108,6 +108,15 @@ CUTS = {
     (0x32c500, 'e9230b32', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
     (0x32c66c, 'ea030232', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more orr w10,wzr,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
   ],
+  # SDK 8.2.1 sdk 5fd4f531c119 (Super Smash Bros. Ultimate 13.0.5; Catherine: Full Body 1.0.1a, which has no virtual address memory and never makes an address region): the node area cut,
+  # and regions of 1 GB and more aligned to 32 MB, as DRAGON QUEST XI S's SDK 7.3.2 build, whose AddressRegionManager this is at other offsets. Smash's engine reserves one region for all its
+  # memory (cut to 4 GB in its patches.py); with the 1 GB node area and 1 GB alignment it started 1.95 GB into the alias region (measured with a 64 GB one). The constructor is at
+  # sdk+0x336b40 (the limit at +0x336b50 and the occupied length at +0x336bf0, both orr w9,wzr,#0x3fe00000); VammManager::AllocateAddressRegion aligns a region by its size (+0x336d5c)
+  '5fd4f531c1195e9e5510c9e73f22cd39': [
+    (0x336b50, 'e9230b32', '097ca052', 'AddressRegionManager constructor: node area limit orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0x336bf0, 'e9230b32', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0x336d5c, 'ea030232', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more orr w10,wzr,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
+  ],
   # Octopath Traveler 0 1.0.5 (v327680) sdk (SDK 19.3.13): the AddressRegionManager node area 0x3fe00000 → 0x3e00000 (62 MB), as Engage's SDK 12 (above). The same constructor (sdk+0x1423ec): +0x1423fc
   # sets the node area limit, +0x142468 registers it as an occupied region. Unreal's region (-SwitchVirtualAddressSpaceSize, the profile's game_args) then starts 62 MB into the alias region, and the guest
   # block stays small enough for an iPhone next to the Unreal heap (hle_uemalloc.c), which lives outside it
