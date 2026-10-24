@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      GH_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
       GH_REPO: ${{ github.repository }}
     steps:
       # Use GitHub's fork sync API: merge upstream without force-pushing
