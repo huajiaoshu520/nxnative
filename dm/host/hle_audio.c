@@ -1,7 +1,7 @@
 // nn::audio AudioOut: the game (FMOD nx output layer) appends PCM buffers block by block; once played the system puts them back on the "released" queue and signals the event.
 // Host: real audio output = CoreAudio AudioUnit (Mac DefaultOutput / iOS RemoteIO); silent sink = consumes buffers in real time (no sound, pacing matches the real device).
 //       iOS defaults to real audio output (the product must have sound), tests that want silence set DM_AUDIO=0 explicitly; Mac defaults to the silent sink (replay / gate checks are silent), DM_AUDIO=1 for real audio output.
-// The contents of AudioOut / AudioOutBuffer / AudioOutParameter are read and written only through the interfaces below; the host defines its own internal layout and only writes the front part of the structs.
+// The contents of AudioOut / AudioOutBuffer / AudioOutParameter are read and written only through the interfaces below; the host defines its own internal layout and only writes the front part of the structs (AudioOut: the SDK's own fields, au_info).
 #include "hle.h"
 #include <AudioToolbox/AudioToolbox.h>
 #include <TargetConditionals.h>
@@ -267,6 +267,10 @@ HLE_FORCE("_ZN2nn5audio13ListAudioOutsEPNS0_12AudioOutInfoEi", "audio output dev
     if (n < 1) return 0;
     memset(info, 0, 256); strcpy(info, "DeviceOut"); return 1;
 }
+// The front of the guest AudioOut as the SDK's OpenAudioOut fills it from the service's answer: sample rate, channel count, sample format, state (+0 / +4 / +8 / +0xc, the same in SDK 8, 12, 18 and 20;
+// its GetAudioOutSampleRate / ChannelCount / SampleFormat are single loads from there); CloseAudioOut sets the state to stopped and leaves the rest. Code outside the SDK reads these fields too:
+// middleware that checks the first word before it stops and closes its output skipped the close while the host left it zero, freed the PCM buffers and the host's consumer read freed memory (Luigi's Mansion 3, PR #109)
+static void au_info(void *g, int ch, int state) { uint32_t *f = g; f[0] = RATE; f[1] = (uint32_t)ch; f[2] = FMT_PCM16; f[3] = (uint32_t)state; }
 static Result au_open_at(void *g, void *ev, const char *name, const uint8_t *param, void *lr) {
     static _Atomic int nopen;
     int ch = *(const uint16_t *)(param + 4); int rate = *(const int32_t *)param;
@@ -291,6 +295,7 @@ static Result au_open_at(void *g, void *ev, const char *name, const uint8_t *par
     char sb[64];
     LOG("audio #%d OpenAudioOut %s channels %d %s%s (call site %s)", a->id, name ? name : "(default)", ch, real_audio() ? "real output" : "silent sink", ev ? "" : ", no release event (the game polls)", site(lr, sb, sizeof sb));
     if (real_audio()) { static pthread_once_t wd = PTHREAD_ONCE_INIT; au_open(a); pthread_once(&wd, au_watchdog_start); }
+    au_info(g, ch, STATE_STOPPED);
     return RES_OK;
 }
 HLE_FORCE("_ZN2nn5audio12OpenAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventEPKcRKNS0_17AudioOutParameterE", "connect to the audout service; host AudioUnit / silent sink",
@@ -335,7 +340,8 @@ static void au_close(void *g, void *lr) {
     if (a->au) { AudioUnitUninitialize(a->au); AudioComponentInstanceDispose(a->au); }
     dispatch_release(a->notify_sem);
     if (a->rel_sem) dispatch_release(a->rel_sem);
-    pthread_mutex_destroy(&a->m); free(a);
+    pthread_mutex_destroy(&a->m); int ch = a->ch; free(a);
+    au_info(g, ch, STATE_STOPPED);
 }
 HLE_FORCE("_ZN2nn5audio13CloseAudioOutEPNS0_8AudioOutE", "close the audio output", void, h_au_Close, void *g) { au_close(g, __builtin_return_address(0)); }
 HLE_FORCE("_ZN2nn5audio16GetAudioOutStateEPKNS0_8AudioOutE", "playback state", int, h_au_State, const void *g) { return atomic_load_explicit(&ao(g)->state, memory_order_acquire); }

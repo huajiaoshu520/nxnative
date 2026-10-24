@@ -204,7 +204,7 @@ static const char *const g_util_src =
 static void dev_init_once(void) {
     @autoreleasepool {
         g_log = getenv("DM_GL_LOG") && atoi(getenv("DM_GL_LOG"));
-        g_dev = (__bridge id<MTLDevice>)mtl_device();
+        g_dev = (__bridge id<MTLDevice>)mtl_device_classic();
         g_q = [g_dev newCommandQueueWithMaxCommandBufferCount:64]; g_q.label = @"gl";
         g_ev = [g_dev newSharedEvent];
         MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:1 height:1 mipmapped:NO];

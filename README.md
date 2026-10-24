@@ -52,6 +52,7 @@ Needs iOS / iPadOS 26 or later on an iPhone 15 Pro or newer (A17 Pro chip or lat
 | ![Mario Kart 8 Deluxe](docs/images/mario-kart-8-deluxe.jpg)<br>Mario Kart 8 Deluxe<br><sub>IPA ~11.9 GB · update 4.0.0 · Mii heads not drawn (no firmware)</sub> | ![Balatro](docs/images/balatro.jpg)<br>Balatro<br><sub>IPA ~82 MB · update 1.1.3 · played by touch</sub> |
 | ![ROMANCE OF THE THREE KINGDOMS 8 REMAKE](docs/images/romance-of-the-three-kingdoms-8-remake.jpg)<br>ROMANCE OF THE THREE KINGDOMS 8 REMAKE<br><sub>IPA ~16.8 GB · update 1.1.3 · controller only</sub> | ![Taiko Risshiden V DX](docs/images/taiko-risshiden-v-dx.jpg)<br>Taiko Risshiden V DX<br><sub>IPA ~3.3 GB · update 1.1.1 · Japanese · played by touch</sub> |
 | ![Super Smash Bros. Ultimate](docs/images/super-smash-bros-ultimate.jpg)<br>Super Smash Bros. Ultimate<br><sub>IPA ~17.5 GB · update 13.0.5 · offline</sub> | ![Bayonetta 3](docs/images/bayonetta-3.jpg)<br>Bayonetta 3<br><sub>IPA ~14.2 GB · update 1.2.0</sub> |
+| ![Advance Wars 1+2: Re-Boot Camp](docs/images/advance-wars-1-2-re-boot-camp.jpg)<br>Advance Wars 1+2: Re-Boot Camp<br><sub>IPA ~7.1 GB</sub> | ![Pokémon Sword](docs/images/pokemon-sword.jpg)<br>Pokémon Sword<br><sub>IPA ~12.4 GB · update 1.3.2</sub> |
 
 ## Pack an IPA
 

@@ -75,7 +75,7 @@ Binding conventions followed during translation (the NVN driver's layout, the sa
 | `nvn/nvn_tex.c`, `nvn/nvn_tex.h` | Storage size, alignment and per-level offsets of block-linear textures (ported from deko3d) |
 | `nvn/nvn_dirty.c`, `nvn/nvn_dirty.h` | Tracks dirty pages of game memory with write protection, to decide whether texture contents have changed and need re-uploading |
 | `nvn/nvn_refl.m`, `nvn/nvn_refl.h` | Converts shader reflection json into fixed-length C arrays, so that drawing only walks arrays |
-| `nvn/nvn_hmap.h`, `nvn/nvn_cover.h`, `nvn/nvn_pace.h`, `nvn/nvn_pso_skey.h` | Hash table, geometric proof of full-coverage draws, presentation pacer, pipeline manifest key |
+| `nvn/nvn_hmap.h`, `nvn/nvn_cover.h`, `nvn/nvn_pace.h`, `nvn/nvn_pso_skey.h`, `nvn/nvn_primitive.h` | Hash table, geometric proof of full-coverage draws, presentation pacer, pipeline manifest key, indexed triangle fans and quads as triangle lists (primitive restart kept) |
 | `nvn/nvn_builtin.h` | Hand-written MSL for the 4 compute shaders embedded in the main program |
 | `nvn/include/nvn.h` | NVN interface declarations (third party; for the license see the file header) |
 | `nvn/names.txt` | The NVN API name list. The per-game tables described above live in the game profile `dm/games/<id>/` (named after the base game's title ID; tools pick it with `DM_GAME`, make with `GAME`; there is no default game) |

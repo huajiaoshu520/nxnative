@@ -187,6 +187,9 @@ NVN(nvnDeviceInstallDebugCallback, void, NVNdevice *d, const PFNNVNDEBUGCALLBACK
 }
 NVN(nvnDeviceSetWindowOriginMode, void, NVNdevice *d, NVNwindowOriginMode m) { ((dev_t_ *)d)->origin = m; mtl_set_origin_lower_left(m == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT); LOG("[nvn] window origin %s", m ? "upper left (as D3D / Metal)" : "lower left (GL)"); }
 NVN(nvnDeviceSetDepthMode, void, NVNdevice *d, NVNdepthMode m) { ((dev_t_ *)d)->depth_mode = m; mtl_set_depth_zero(m != 0); LOG("[nvn] depth mode %s", m ? "near=0 (as D3D / Metal)" : "near=-w (GL)"); }
+// Pokémon Sword sets neither mode and reads both, keeping NVN's defaults (lower-left origin, near = -w); the two were red stubs
+NVN(nvnDeviceGetWindowOriginMode, NVNwindowOriginMode, const NVNdevice *d) { return ((const dev_t_ *)d)->origin; }
+NVN(nvnDeviceGetDepthMode, NVNdepthMode, const NVNdevice *d) { return ((const dev_t_ *)d)->depth_mode; }
 NVN(nvnDeviceFinalizeCommandHandle, void, NVNdevice *d, NVNcommandHandle h) { (void)d; (void)h; }
 
 // ---------- Memory pools ----------
@@ -1417,8 +1420,8 @@ static void tsummary(uint64_t frame) {
             LOG("[nvn] thread policy: main thread real-time computation %.2f ms / period %.2f ms, real-time policy %s, current priority %d (base %d, policy %d); %u worker threads QoS %#x; present QoS %#x", g_rt_comp_ms, g_rt_period_ms, rt_live ? "in effect" : "not in effect", okx ? xi.pth_curpri : -1, okx ? xi.pth_priority : -1, okx ? xi.pth_policy : -1, wn, wq, mtl_present_qos()); }
         py = cy; pk = ck; pw = cw; }
       pi = ci; pc = cc; pd = dr_; pf = frame; }
-    uint64_t up, re, fa, pr; mtl_pkg_stats(&up, &re); nvn_dirty_stats(&fa, &pr);
-    LOG("[nvn] packaged textures: first uploads %llu, re-uploads on pool content change %llu; write-protection faults %llu, pages unprotected before host writes %llu; missed %llu (cumulative)", up, re, fa, pr, mtl_pkg_miss());
+    uint64_t up, re, es = mtl_pkg_edge_skips(), fa, pr; mtl_pkg_stats(&up, &re); nvn_dirty_stats(&fa, &pr);
+    LOG("[nvn] packaged textures: first uploads %llu, re-uploads on pool content change %llu, writes beside a texture only (not re-uploaded) %llu; write-protection faults %llu, pages unprotected before host writes %llu; missed %llu (cumulative)", up, re, es, fa, pr, mtl_pkg_miss());
     memset(g_tn, 0, sizeof g_tn);
 }
 // DM_SLOWFRAME=1 (test switch, read over the log port on a real device): per-frame timings are first stored in a ring of the last 16 frames; dropped frames are judged 8 frames late (GPU / on-screen present times are back by then),

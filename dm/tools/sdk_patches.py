@@ -117,6 +117,16 @@ CUTS = {
     (0x336bf0, 'e9230b32', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
     (0x336d5c, 'ea030232', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more orr w10,wzr,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
   ],
+  # SDK 10.4.1 sdk d9add76fc264 (Advance Wars 1+2: Re-Boot Camp 1.0.0, Unity 2020.2.1f3; The Great Ace Attorney Chronicles 1.0.0, which has no virtual address memory and never makes an
+  # address region): the node area cut, and regions of 1 GB and more aligned to 32 MB, as DRAGON QUEST XI S's SDK 7.3.2 build, whose AddressRegionManager this is at other offsets.
+  # nninitStartup (main+0x365310) calls StandardAllocator::Initialize(nullptr, pool − used) with virtual address memory, which aborted at its CentralHeap::Init (sdk+0x2ee060), and that region
+  # is more than 1 GB. The constructor is at sdk+0x340e90 (the limit at +0x340ea0 from orr w8,wzr,#0x3fe00000, the occupied length at +0x340f3c from orr w9,wzr,#0x3fe00000);
+  # VammManager::AllocateAddressRegion (sdk+0x341030) aligns a region by its size: 64 KB under 2 MB, 2 MB under 4 MB, 4 MB under 32 MB, 32 MB under 1 GB, else 1 GB (+0x34109c)
+  'd9add76fc264863d85fbbd1d70076c76': [
+    (0x340ea0, 'e8230b32', '087ca052', 'AddressRegionManager constructor: node area limit orr w8,wzr,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x340f3c, 'e9230b32', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0x34109c, 'ea030232', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more orr w10,wzr,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
+  ],
   # Octopath Traveler 0 1.0.5 (v327680) sdk (SDK 19.3.13): the AddressRegionManager node area 0x3fe00000 → 0x3e00000 (62 MB), as Engage's SDK 12 (above). The same constructor (sdk+0x1423ec): +0x1423fc
   # sets the node area limit, +0x142468 registers it as an occupied region. Unreal's region (-SwitchVirtualAddressSpaceSize, the profile's game_args) then starts 62 MB into the alias region, and the guest
   # block stays small enough for an iPhone next to the Unreal heap (hle_uemalloc.c), which lives outside it

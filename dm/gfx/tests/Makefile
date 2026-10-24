@@ -93,10 +93,20 @@ check_t_linear_readback: t_linear_readback
 run: check_t_linear_readback
 t_pfv: t_pfv.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pfv.m $(MTL_T_SRC) $(FW)
+t_integer_blend: t_integer_blend.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_integer_blend.m $(MTL_T_SRC) $(FW)
+t_primitive_restart: t_primitive_restart.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_primitive_restart.m $(MTL_T_SRC) $(FW)
+t_clear_ds: t_clear_ds.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_clear_ds.m $(MTL_T_SRC) $(FW)
+t_upgrade_alias: t_upgrade_alias.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_upgrade_alias.m $(MTL_T_SRC) $(FW)
+t_stencil_view: t_stencil_view.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_stencil_view.m $(MTL_T_SRC) $(FW)
 # The Vulkan layer (#included) over the whole NVN layer, whose device and present path it uses
 t_vk_desc: t_vk_desc.m ../vk/hle_vk.m $(MTL_T_DEP)
 	clang $(CFLAGS) -I../../third_party/vulkan-headers/include -fobjc-arc -o $@ t_vk_desc.m $(MTL_T_SRC) ../nvn/nvn_mtl.m $(FW)
-run: t_nvn t_dirty_slots t_dirty_race t_builtin t_vin t_tbuf2d t_deswz_gpu t_pace t_fstep t_refl t_hmap t_cover t_fuse_check t_present_crop t_reorder_chain t_defer_chain t_zskip t_xv t_ub t_vbuf t_geometry t_mip_extent t_rt_range_shape t_rt_range_ro t_rt_range t_rt_depth_ro t_pso_skey t_pso_pending t_pfv t_view_levels t_view_swizzle t_vk_desc
+run: t_nvn t_dirty_slots t_dirty_race t_builtin t_vin t_tbuf2d t_deswz_gpu t_pace t_fstep t_refl t_hmap t_cover t_fuse_check t_present_crop t_reorder_chain t_defer_chain t_zskip t_xv t_ub t_vbuf t_geometry t_mip_extent t_rt_range_shape t_rt_range_ro t_rt_range t_rt_depth_ro t_pso_skey t_pso_pending t_pfv t_view_levels t_view_swizzle t_vk_desc t_integer_blend t_primitive_restart t_clear_ds t_upgrade_alias t_stencil_view
 	./t_nvn
 	./t_dirty_slots
 	./t_dirty_race
@@ -135,5 +145,10 @@ run: t_nvn t_dirty_slots t_dirty_race t_builtin t_vin t_tbuf2d t_deswz_gpu t_pac
 	MTL_DEBUG_LAYER=1 ./t_view_levels
 	MTL_DEBUG_LAYER=1 ./t_view_swizzle
 	MTL_DEBUG_LAYER=1 ./t_vk_desc
+	MTL_DEBUG_LAYER=1 ./t_integer_blend
+	MTL_DEBUG_LAYER=1 ./t_primitive_restart
+	MTL_DEBUG_LAYER=1 ./t_clear_ds
+	MTL_DEBUG_LAYER=1 ./t_upgrade_alias
+	MTL_DEBUG_LAYER=1 ./t_stencil_view
 	DM_GAME=$(GAME) python3 test_tbdr_budget.py
 .PHONY: run

@@ -671,21 +671,29 @@ def fs_uint(src):
     refuses a pipeline whose float output meets an integer attachment. Luigi's Mansion 3 draws its whole scene into an R32Uint + RGBA8Uint G-buffer (1,377 of its 4,307 pixel shaders write
     an output from integer bits): a hand-written row per shader (shader_facts_manual.tsv) does not scale to that. A pixel shader that writes an output from integer bits gets a second entry
     point, main0_u, the same body returning every colour output as the unsigned integer vector of the same bits (as_type, nothing converted); the host takes it for a pipeline whose colour
-    attachments are all unsigned integer formats (nvn_mtl.m). → the source with main0_u added, or None"""
+    attachments are all unsigned integer formats (nvn_mtl.m).
+    A G-buffer may mix the two: Pokémon Sword's scene shaders write colour 0 and 2 as floats and colour 1 from integer bits into an RGBA16Uint target. A shader whose outputs include both
+    gets a third entry point, main0_m, that returns only the outputs written from integer bits as unsigned integers (their colour indices: the mask); the host takes it for a pipeline whose
+    integer attachments are exactly those. → (the source with main0_u (and main0_m) added, the main0_m mask or 0), or (None, 0)"""
     m = re.search(r'^.*\bfragment\s+main0_out\s+main0\s*\(', src, re.M); st = re.search(r'struct main0_out\s*\{(.*?)\};', src, re.S)
-    if not m or not st: return None
+    if not m or not st: return None, 0
     mem = re.findall(r'^\s*(\w+)\s+(\w+)\s*(\[\[[^\]]*\]\])?;', st.group(1), re.M)
     cols = {nm: ty for ty, nm, at in mem if 'color(' in at and ty.startswith('float')}
     # The hardware writes an output's bits to an integer target whatever the shader computed, so main0_u is right for any pixel shader; only those that look like integer writers get one
     # (the library stays small): an output from integer bits, or nothing but constants (a clear drawn into an integer target, 35e1865e313f0553 writes 0 into Luigi's Mansion 3's R32Uint target)
-    ints = any(re.search(r'\bout\.%s(?:\.\w+)? = as_type<float\d?>\(' % nm, src) for nm in cols)
+    from_int = {nm for nm in cols if re.search(r'\bout\.%s(?:\.\w+)? = as_type<float\d?>\(' % nm, src)}
     writes = [m.group(1) for nm in cols for m in re.finditer(r'\bout\.%s(?:\.\w+)? = ([^;]+);' % nm, src)]
-    if not ints and not (writes and all(re.fullmatch(r'-?[0-9.]+f?|float\d\([-0-9., ]*\)', w.strip()) for w in writes)): return None
+    if not from_int and not (writes and all(re.fullmatch(r'-?[0-9.]+f?|float\d\([-0-9., ]*\)', w.strip()) for w in writes)): return None, 0
     uty = lambda ty: 'u' + ty.replace('float', 'int')   # float4 → uint4, float → uint
-    struct = 'struct main0_out_u\n{\n' + ''.join(f'    {uty(cols[nm]) if nm in cols else ty} {nm} {at};\n' for ty, nm, at in mem) + '};\n\n'
-    ret = 'return main0_out_u{' + ', '.join(f'as_type<{uty(cols[nm])}>(out.{nm})' if nm in cols else f'out.{nm}' for _, nm, _ in mem) + '};'
-    body = re.sub(r'\bfragment\s+main0_out\s+main0\s*\(', 'fragment main0_out_u main0_u(', src[m.start():], count=1).replace('return out;', ret)
-    return src + '\n' + struct + body
+    def entry(sfx, as_uint):   # main0 again as main0_<sfx>, returning the outputs in as_uint as the unsigned integer vectors of their bits (dmsh_fetch.py cuts the source at main0_out_u)
+        struct = f'struct main0_out_{sfx}\n{{\n' + ''.join(f'    {uty(cols[nm]) if nm in as_uint else ty} {nm} {at};\n' for ty, nm, at in mem) + '};\n\n'
+        ret = f'return main0_out_{sfx}{{' + ', '.join(f'as_type<{uty(cols[nm])}>(out.{nm})' if nm in as_uint else f'out.{nm}' for _, nm, _ in mem) + '};'
+        return '\n' + struct + re.sub(r'\bfragment\s+main0_out\s+main0\s*\(', f'fragment main0_out_{sfx} main0_{sfx}(', src[m.start():], count=1).replace('return out;', ret)
+    out, mask = src + entry('u', set(cols)), 0
+    if from_int and set(cols) - from_int:   # some outputs from integer bits, some not: the mixed entry point
+        out += entry('m', from_int)
+        mask = sum(1 << int(re.search(r'color\((\d+)\)', at).group(1)) for _, nm, at in mem if nm in from_int)
+    return out, mask
 
 SG_OPS = {333: 'true', 334: 'pred', 335: 'pred', 336: 'true', 337: 'value', 338: 'value', 339: 'ballot', 345: 'value', 346: 'value', 347: 'value', 348: 'value'}   # OpGroupNonUniform* → its one-lane value
 SG_BUILTINS = {36: 'one', 41: 'zero', 4416: 'one4', 4417: 'one4', 4418: 'zero4', 4419: 'one4', 4420: 'zero4'}   # SubgroupSize, SubgroupLocalInvocationId, Eq / Ge / Gt / Le / Lt masks
@@ -831,7 +839,7 @@ def finish(key, w, j, c1):
         plain = full
         full, lay = vs_layer_entry(full)   # layer entry points for a slice-writing geometry shader (see vs_layer_entry)
         open(msl, 'w').write(full)
-    fu = fs_uint(src) if j['stage'] == 'ps' else None   # the integer-output entry point (see fs_uint); the analysis below uses the source with only main0
+    fu, fmask = fs_uint(src) if j['stage'] == 'ps' else (None, 0)   # the integer-output entry points (see fs_uint); the analysis below uses the source with only main0
     if fu: plain = src; open(msl, 'w').write(fu)
     res = json.load(open(os.path.join(w, key + '.res.json')))
     try: MTL.compile('mac', msl, lib)   # MSL identical to one compiled before takes that library (dmsh_mtlcache.py)
@@ -849,7 +857,7 @@ def finish(key, w, j, c1):
     refl = {'key': key + '_b', 'route': 'B', 'chain': CHAIN, 'dm_ctl': key, 'source': f'{name}#{k}', 'pc_paired': pc_of[key], 'stage': j['stage'],
             'entry': entry.group(2) if entry else 'main0', 'msl_entry_kind': entry.group(1) if entry else None, **({'entry_z': 'main0_z', 'entry_geometry_capture': 'main0_gs'} if j['stage'] == 'vs' else {}),
             **({'entry_tf': 'main0_tf', 'tf_strides': [e[2] if e else 0 for e in j['tf']]} if j.get('tf') else {}),
-            **({'entry_layer': 'main0_l', 'entry_layer_z': 'main0_lz', 'layer_from': lay} if lay else {}), **({'entry_u': 'main0_u'} if fu else {}),
+            **({'entry_layer': 'main0_l', 'entry_layer_z': 'main0_lz', 'layer_from': lay} if lay else {}), **({'entry_u': 'main0_u'} if fu else {}), **({'entry_m': 'main0_m', 'uint_mask_m': fmask} if fu and fmask else {}),
             'threadgroup_size': j.get('local'), 'c1': c1.hex(), 'notes': res['notes'] + (['not in the answer table, queries use defaults'] if j.get('no_facts') else []), 'drv_reads': dr, 'drv_unfillable': unfillable(dr),
             'bindings': reflect(key, j['stage'], src, res),
             'vertex_inputs': [{'location': int(m.group(2)), 'msl_type': m.group(1)} for m in re.finditer(r'(\w+)\s+\w+\s*\[\[attribute\((\d+)\)\]\]', src)],

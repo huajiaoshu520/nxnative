@@ -417,6 +417,34 @@ int main(void) {
         mtl_pkg_stats(&up, &re); EXPECT("host write triggers a re-upload, 2 in total", 2, re - re0);
         P(nvnMemoryPoolFinalize)(&wp);
     }
+    // 6c1. Writes beside a texture (pkg_edges_clean): the texture starts 4 KB into a host page whose first 4 KB hold other data (Pokémon Sword: the pool's object). A write there dirties the
+    //      page, but the texture's bytes are as uploaded: protected again, no re-upload; a write into the texture's own bytes in that page still re-uploads
+    {
+        static uint8_t eb_[256 << 10] __attribute__((aligned(16384)));
+        NVNmemoryPoolBuilder epb; NVNmemoryPool ep; P(nvnMemoryPoolBuilderSetDefaults)(&epb); P(nvnMemoryPoolBuilderSetStorage)(&epb, eb_, sizeof eb_);
+        P(nvnMemoryPoolInitialize)(&ep, &epb);
+        NVNtextureBuilder b; NVNtexture te; NVNpackagedTextureLayout lay = {{1, 0, 0, 0, 7, 0, 1, 0}};
+        P(nvnTextureBuilderSetDevice)(&b, &dev); P(nvnTextureBuilderSetDefaults)(&b); P(nvnTextureBuilderSetWidth)(&b, 16); P(nvnTextureBuilderSetHeight)(&b, 8);
+        P(nvnTextureBuilderSetFormat)(&b, NVN_FORMAT_RGBA8); P(nvnTextureBuilderSetPackagedTextureLayout)(&b, &lay);
+        P(nvnTextureBuilderSetStorage)(&b, &ep, 0x11000); P(nvnTextureInitialize)(&te, &b);
+        nvn_texdesc dd = ((tex_t *)&te)->d;
+        uint8_t lin[16 * 8 * 4], *store = eb_ + 0x11000, *outb = eb_ + 0x30000;
+        FILLPAT(5); nvn_swizzle(&dd, 0, 0, lin, 64, store);
+        NVNcopyRegion all = {0, 0, 0, 16, 8, 1};
+        #define GPU_READ_EQ_E(k, name) do { P(nvnCommandBufferBeginRecording)(&cb); P(nvnCommandBufferSetCopyRowStride)(&cb, 0); \
+            P(nvnCommandBufferCopyTextureToBuffer)(&cb, &te, NULL, &all, (NVNbufferAddress)outb, 0); NVNcommandHandle hh = P(nvnCommandBufferEndRecording)(&cb); \
+            P(nvnQueueSubmitCommands)(&q, 1, &hh); P(nvnQueueFinish)(&q); FILLPAT(k); EXPECT(name, 0, memcmp(outb, lin, sizeof lin)); } while (0)
+        uint64_t up0, re0, es0, up, re; mtl_pkg_stats(&up0, &re0); es0 = mtl_pkg_edge_skips();
+        GPU_READ_EQ_E(5, "texture sharing its host page: first upload = version 5");
+        for (int i = 0; i < 3; i++) { eb_[0x10800 + i] ^= 0x5a; GPU_READ_EQ_E(5, "a write beside the texture: still version 5"); }
+        mtl_pkg_stats(&up, &re);
+        EXPECT("writes beside the texture: no re-upload", 0, re - re0);
+        EXPECT("writes beside the texture: found clean three times", 3, mtl_pkg_edge_skips() - es0);
+        FILLPAT(6); nvn_swizzle(&dd, 0, 0, lin, 64, store);
+        GPU_READ_EQ_E(6, "a write into the texture's own bytes in that page: version 6");
+        mtl_pkg_stats(&up, &re); EXPECT("a write into the texture: re-upload +1", 1, re - re0);
+        P(nvnMemoryPoolFinalize)(&ep);
+    }
 
     // 6c2. WriteTexels region writes: the result must be byte-identical to "decode the whole level → patch the region → re-encode" (Metroid Dread's minimap writes one texel at a time, which used to cost a whole-level round trip each).
     //      RGBA8 100×37 (width not a whole number of GOBs), BC1 64×64 (4×4 blocks, 8 bytes per block), RGBA16F 33×17 two-layer array; several regions each, including 1×1, a whole row, GOB-crossing and the whole level

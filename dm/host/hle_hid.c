@@ -499,3 +499,35 @@ HLE_FORCE("_ZN2nn3hid23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21Vib
     uint32_t targets = h ? vib_targets(*h) : 0;
     *v = targets ? dm_haptics_actual(__builtin_ctz(targets), *h >> 16 & 1) : (dm_vibration){0, 160, 0, 320};
 }
+
+// Poké Ball Plus (Palma, Pokémon Sword / Shield, SDK 7.3.2): the host has none. The SDK's own calls reach the hid service (SetPalmaBoostMode, the first, at start-up: a null read in
+// hid::detail::SetPalmaBoostMode, sdk+0x238eb0). No npad reports the Palma style, so the game never gets a connection handle; every call on a handle fails as for a handle that is not
+// connected (hid 202-3302, ResultPalmaInvalidHandle in yuzu's hid errors), and the operation complete event is never bound
+#define RES_PALMA_INVALID_HANDLE (202u | 3302u << 9)
+HLE_FORCE("_ZN2nn3hid17SetPalmaBoostModeEb", "Poké Ball Plus boost mode; the host has no Poké Ball Plus", void, h_hid_PalmaBoost, unsigned on) { (void)on; }
+HLE_FORCE("_ZN2nn3hid24EnableAnyPalmaConnectionEv", "Poké Ball Plus pairing; the host has none", Result, h_hid_PalmaAnyOn, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn3hid25DisableAnyPalmaConnectionEv", "Poké Ball Plus pairing; the host has none", Result, h_hid_PalmaAnyOff, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn3hid24GetPalmaConnectionHandleEPNS0_21PalmaConnectionHandleERKj", "Poké Ball Plus connection handle: none connected", Result, h_hid_PalmaHandle, uint64_t *h, const uint32_t *id) {
+    (void)id; if (h) *h = 0; return RES_PALMA_INVALID_HANDLE;
+}
+#define PALMA_FAIL(sym, what, fn, ...) HLE_FORCE(sym, "Poké Ball Plus " what ": fails, none connected", Result, fn, __VA_ARGS__) { return RES_PALMA_INVALID_HANDLE; }
+PALMA_FAIL("_ZN2nn3hid15InitializePalmaERKNS0_21PalmaConnectionHandleE", "initialization", h_hid_PalmaInit, const void *h)
+PALMA_FAIL("_ZN2nn3hid31BindPalmaOperationCompleteEventERKNS0_21PalmaConnectionHandleEPNS_2os15SystemEventTypeENS4_14EventClearModeE", "operation complete event", h_hid_PalmaBind, const void *h, void *ev, int mode)
+PALMA_FAIL("_ZN2nn3hid21GetPalmaOperationInfoEPNS0_18PalmaOperationInfoERKNS0_21PalmaConnectionHandleE", "operation result", h_hid_PalmaOpInfo, void *info, const void *h)
+PALMA_FAIL("_ZN2nn3hid17PlayPalmaActivityERKNS0_21PalmaConnectionHandleERKt", "activity", h_hid_PalmaPlay, const void *h, const uint16_t *i)
+PALMA_FAIL("_ZN2nn3hid18SetPalmaFrModeTypeERKNS0_21PalmaConnectionHandleERKNS0_15PalmaFrModeTypeE", "FR mode", h_hid_PalmaFr, const void *h, const void *t)
+PALMA_FAIL("_ZN2nn3hid13ReadPalmaStepERKNS0_21PalmaConnectionHandleE", "step count", h_hid_PalmaStepRead, const void *h)
+PALMA_FAIL("_ZN2nn3hid15EnablePalmaStepERKNS0_21PalmaConnectionHandleEb", "step counting", h_hid_PalmaStepOn, const void *h, unsigned on)
+PALMA_FAIL("_ZN2nn3hid14ResetPalmaStepERKNS0_21PalmaConnectionHandleE", "step count reset", h_hid_PalmaStepReset, const void *h)
+PALMA_FAIL("_ZN2nn3hid27ReadPalmaApplicationSectionERKNS0_21PalmaConnectionHandleEim", "application section read", h_hid_PalmaAppRead, const void *h, int off, uint64_t n)
+PALMA_FAIL("_ZN2nn3hid28WritePalmaApplicationSectionERKNS0_21PalmaConnectionHandleEimRKNS0_35PalmaApplicationSectionAccessBufferE", "application section write", h_hid_PalmaAppWrite, const void *h, int off, uint64_t n, const void *buf)
+PALMA_FAIL("_ZN2nn3hid19ReadPalmaUniqueCodeERKNS0_21PalmaConnectionHandleE", "unique code", h_hid_PalmaCode, const void *h)
+PALMA_FAIL("_ZN2nn3hid25SetPalmaUniqueCodeInvalidERKNS0_21PalmaConnectionHandleE", "unique code reset", h_hid_PalmaCodeOff, const void *h)
+PALMA_FAIL("_ZN2nn3hid23WritePalmaActivityEntryERKNS0_21PalmaConnectionHandleERKtPKNS0_18PalmaActivityEntryE", "activity entry write", h_hid_PalmaActWrite, const void *h, const uint16_t *i, const void *e)
+PALMA_FAIL("_ZN2nn3hid28WritePalmaRgbLedPatternEntryERKNS0_21PalmaConnectionHandleERKtPKvm", "LED pattern write", h_hid_PalmaLed, const void *h, const uint16_t *i, const void *p, uint64_t n)
+PALMA_FAIL("_ZN2nn3hid19WritePalmaWaveEntryERKNS0_21PalmaConnectionHandleERKNS0_12PalmaWaveSetERKtPKvmm", "sound write", h_hid_PalmaWave, const void *h, const void *set, const uint16_t *i, const void *p, uint64_t n, uint64_t m)
+PALMA_FAIL("_ZN2nn3hid37GetPalmaDataBaseIdentificationVersionERKNS0_21PalmaConnectionHandleE", "database version", h_hid_PalmaDbGet, const void *h)
+PALMA_FAIL("_ZN2nn3hid37SetPalmaDataBaseIdentificationVersionERKNS0_21PalmaConnectionHandleEi", "database version", h_hid_PalmaDbSet, const void *h, int v)
+PALMA_FAIL("_ZN2nn3hid19SuspendPalmaFeatureERKNS0_21PalmaConnectionHandleERKNS_4util10BitFlagSetILi32ENS0_12PalmaFeatureEEE", "feature suspension", h_hid_PalmaSuspend, const void *h, const void *f)
+PALMA_FAIL("_ZN2nn3hid16ReadPalmaPlayLogERKNS0_21PalmaConnectionHandleERKt", "play log read", h_hid_PalmaLogRead, const void *h, const uint16_t *i)
+PALMA_FAIL("_ZN2nn3hid17ResetPalmaPlayLogERKNS0_21PalmaConnectionHandleERKt", "play log reset", h_hid_PalmaLogReset, const void *h, const uint16_t *i)
