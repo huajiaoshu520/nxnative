@@ -16,7 +16,8 @@
 #       Unity 2022 (Ace Attorney Investigations Collection, 2022.3) keeps the 0x60 header in the program code, but the blob also holds parameter entries, which unity_code_blobs leaves out
 #   · MSHD (MercurySteam, Metroid Dread system/shd/*.bshdat): each stage = a control section (+0x20 = control length; sometimes a small compiler option table follows) + the code area starting at the next code header;
 #       NV assembly text follows the first 0x880 bytes of the control section, and SASS disassembly text follows the code area. All 478 files hold "vertex, pixel" in pairs (1, 2 or 4 pairs), paired two by two in order
-#   · G2S (Koei Tecmo's KTGL, Hyrule Warriors: Age of Calamity): GLSLC compiler outputs inside the IDRK entries of the RDB data files (zlib in chunks), see idrk_shaders
+#   · G2S (Koei Tecmo's KTGL, Hyrule Warriors: Age of Calamity): GLSLC compiler outputs inside the IDRK entries of the RDB data files (zlib in chunks), see idrk_shaders;
+#       ROMANCE OF THE THREE KINGDOMS 8 REMAKE's newer RDB keeps them in .fdata files (a PDRK header, then IDRK entries of zlib or LZ4 chunks)
 #   · SPKG (the older KTGL of Fire Emblem: Three Houses): shader packages of G2S containers, loose and inside the LINKDATA archive DATA0.bin / DATA1.bin, see kt_shaders and linkdata_jobs
 #   · SDF (Capcom's RE Engine, Monster Hunter Rise): shader definitions inside the PAK archives (KPKA, entries zstd / deflate compressed), only the newest copy of each path, see kpka_jobs and sdf_shaders
 #   · Trinity packs (Game Freak, Pokémon Legends: Z-A): BNSH inside the files of arc/data.trpfs (Oodle Mermaid, decoded by the game's own decoder in the Mac host), see trpfs_jobs and trinity_shaders
@@ -199,10 +200,12 @@ def glslc_shaders(d, label, need=True):
     if not out and need: red(f'{label}: no GLSLC output')
     return out
 
-IDRK, ZCHUNKED = b'IDRK0000', 0x100000
+IDRK, PDRK = b'IDRK0000', b'PDRK0000'
 def idrk_entries(d):
     """Koei Tecmo RDB data files (Hyrule Warriors: Age of Calamity: asset/*.rdb.bin*, asset/data/*.file) are a run of IDRK entries: 'IDRK0000', u64 entry length, u64 stored length, u64 length,
     u32 0, u32 file KTID, u32 type KTID, u32 flags, a few parameter words, and the stored data at the end of the entry. Entries follow each other directly, some after padding (to 64 KB).
+    ROMANCE OF THE THREE KINGDOMS 8 REMAKE's RDB (0002/root.rdb and system.rdb, indexed by .rdx) keeps the entries in .fdata files named by KTID, each starting with 'PDRK0000' and u64 0x10
+    (its length), and in data/*.file as before; its entries have u32 1 or 0 where Age of Calamity's have 0, and pad to 16 bytes.
     → (start of the stored data, its end, flags) for each entry"""
     o = 0
     while o + 0x30 <= len(d):
@@ -214,15 +217,25 @@ def idrk_entries(d):
         o += esz
 
 def idrk_data(d, a, b, flags, head=None):
-    """An entry's data: flag 0x100000 = zlib in chunks (u32 stored length + a zlib stream each, a zero length ends; Age of Calamity's chunks inflate to at most 16 KB). head: only the first bytes"""
+    """An entry's data. Flag 0x100000 alone = zlib in chunks (Age of Calamity): u32 stored length + a zlib stream each, a zero length ends; the chunks inflate to at most 16 KB.
+    Flag 0x400000 = chunks of another form (ROMANCE OF THE THREE KINGDOMS 8 REMAKE): u16 stored length, 8 bytes that the reader does not need, the stream; a zero length ends, and each chunk
+    inflates to at most 16 KB (0x4000, which LZ4 is given as the most). The streams are LZ4 blocks when 0x100000 is set too, zlib otherwise: of that game's 51,655 entries, 49,620 have flags
+    0x500000, 2,026 have 0x400000 and 9 are stored (0); all of them inflate to the length in their header. Anything else is stored. head: only the first bytes"""
     import zlib
-    if not flags & ZCHUNKED: return d[a:min(b, a + head) if head else b]
+    new, lz4b = flags & 0x400000, flags & 0x500000 == 0x500000
+    if not flags & 0x500000: return d[a:min(b, a + head) if head else b]
     out = []
     while a + 4 <= b:
-        cs = struct.unpack_from('<I', d, a)[0]; a += 4
+        if new: cs = struct.unpack_from('<H', d, a)[0]; a += 10
+        else: cs = struct.unpack_from('<I', d, a)[0]; a += 4
         if not cs: break
-        if head: return zlib.decompressobj().decompress(d[a:a + min(cs, 1024)], head)
-        out.append(zlib.decompress(d[a:a + cs])); a += cs
+        if lz4b:
+            import lz4.block
+            r = lz4.block.decompress(d[a:a + cs], uncompressed_size=0x4000)
+            if head: return r[:head]
+        elif head: return zlib.decompressobj().decompress(d[a:a + min(cs, 1024)], head)
+        else: r = zlib.decompress(d[a:a + cs])
+        out.append(r); a += cs
     return b''.join(out)
 
 def idrk_shaders(path, label, out):
@@ -990,7 +1003,7 @@ def scan_file(args):
     if head[:4] == NLG_DICT:
         nlg_shaders(path, '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
-    if head[:8] == IDRK:
+    if head[:8] in (IDRK, PDRK):
         idrk_shaders(path, '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and head[:8] == ONEPACK:   # a range of Trinity packs (trpfs_jobs)

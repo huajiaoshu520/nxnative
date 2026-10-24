@@ -50,6 +50,7 @@ Needs iOS / iPadOS 26 or later on an iPhone 15 Pro or newer (A17 Pro chip or lat
 | ![Luigi's Mansion 3](docs/images/luigis-mansion-3.jpg)<br>Luigi's Mansion 3<br><sub>IPA ~7.5 GB · 60 fps (30 on Switch) with update 1.4.0</sub> | ![AI: THE SOMNIUM FILES](docs/images/ai-the-somnium-files.jpg)<br>AI: THE SOMNIUM FILES<br><sub>IPA ~8.3 GB</sub> |
 | ![ANIMAL WELL](docs/images/animal-well.png)<br>ANIMAL WELL<br><sub>IPA ~54 MB · update 1.0.10</sub> | ![AI: THE SOMNIUM FILES - nirvanA Initiative](docs/images/ai-the-somnium-files-nirvana-initiative.jpg)<br>AI: THE SOMNIUM FILES - nirvanA Initiative<br><sub>IPA ~11.6 GB · update 1.0.2</sub> |
 | ![Mario Kart 8 Deluxe](docs/images/mario-kart-8-deluxe.jpg)<br>Mario Kart 8 Deluxe<br><sub>IPA ~11.9 GB · update 4.0.0 · Mii heads not drawn (no firmware)</sub> | ![Balatro](docs/images/balatro.jpg)<br>Balatro<br><sub>IPA ~82 MB · update 1.1.3 · played by touch</sub> |
+| ![ROMANCE OF THE THREE KINGDOMS 8 REMAKE](docs/images/romance-of-the-three-kingdoms-8-remake.jpg)<br>ROMANCE OF THE THREE KINGDOMS 8 REMAKE<br><sub>IPA ~16.8 GB · update 1.1.3 · controller only</sub> | |
 
 ## Pack an IPA
 
