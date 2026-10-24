@@ -127,6 +127,14 @@ CUTS = {
     (0x340f3c, 'e9230b32', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
     (0x34109c, 'ea030232', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more orr w10,wzr,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
   ],
+  # SDK 10.4.8 sdk 30a1e87b52f5 (Pikmin 4 1.1.1, Unreal Engine 4.26.2): the same cuts as the SDK 10.4.1 build above, whose AddressRegionManager this is at the same offsets (the constructor
+  # sdk+0x340e90, the node area limit +0x340ea0 and its occupied length +0x340f3c, AllocateAddressRegion's 1 GB alignment +0x34109c). Unreal's nninitStartup reserves its engine region
+  # (-SwitchVirtualAddressSpaceSize, the profile's game_args) in the alias region, so the region starts 62 MB in and a 4 GB region needs no 1 GB alignment slack
+  '30a1e87b52f5a2ac9879685cbfb93d7c': [
+    (0x340ea0, 'e8230b32', '087ca052', 'AddressRegionManager constructor: node area limit orr w8,wzr,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x340f3c, 'e9230b32', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0x34109c, 'ea030232', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more orr w10,wzr,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
+  ],
   # Octopath Traveler 0 1.0.5 (v327680) sdk (SDK 19.3.13): the AddressRegionManager node area 0x3fe00000 → 0x3e00000 (62 MB), as Engage's SDK 12 (above). The same constructor (sdk+0x1423ec): +0x1423fc
   # sets the node area limit, +0x142468 registers it as an occupied region. Unreal's region (-SwitchVirtualAddressSpaceSize, the profile's game_args) then starts 62 MB into the alias region, and the guest
   # block stays small enough for an iPhone next to the Unreal heap (hle_uemalloc.c), which lives outside it

@@ -331,6 +331,12 @@ def find_windows(insl):
         if any(has18(x) for x in seg): out.append(seg)
     return out
 
+def window_adrp(x, S, pc):
+    """An adrp inside a window, copied to pc: the same page from the copy's address (x18 as its stand-in S). Pikmin 4 1.1.1 main+0x43da140 (Unreal Engine 4.26.2): ldaxr x9,[x9]; cmp; b.ne;
+    adrp x10 + add x10 (the same address again for the store); mov x18,x26; stlxr w9,x8,[x10]; …; cbnz w9"""
+    rd = num(x.reg_name(x.operands[0].reg))
+    return ADRP(S if rd == 18 else rd, pc, x.operands[1].imm)
+
 def site_window(seg):
     used = set()
     for x in seg: used |= regs_in(x)
@@ -356,6 +362,7 @@ def site_window(seg):
             if m in ('tbz', 'tbnz'): w = (w & 0xFFF8001F) | ((off & 0x3FFF) << 5)
             else: w = (w & 0xFF00001F) | ((off & 0x7FFFF) << 5)
             dd = dis(w, pc); assert dd.operands[-1].imm == newt and dd.mnemonic == m
+        elif m == 'adrp': w = window_adrp(x, S, copy0 + 4 * k)
         else:
             assert m not in ('adr', 'adrp', 'b', 'bl', 'br', 'blr', 'ret') and not (m == 'ldr' and '[' not in x.op_str), hex(x.address)
         words.append(w)
@@ -407,6 +414,7 @@ def site_retry_window(parts):
                 if m in ('tbz', 'tbnz'): w = (w & 0xFFF8001F) | ((off & 0x3FFF) << 5)
                 else: w = (w & 0xFF00001F) | ((off & 0x7FFFF) << 5)
                 dd = dis(w, pc); assert dd.operands[-1].imm == newt and dd.mnemonic == m
+            elif m == 'adrp': w = window_adrp(x, S, pc)
             else:
                 assert m not in ('adr', 'adrp', 'b', 'bl', 'br', 'blr', 'ret') and not (m == 'ldr' and '[' not in x.op_str), hex(x.address)
             emit(w)
@@ -841,12 +849,13 @@ for a in sorted(kinds):
 
 def scratch_dead(off):
     """x9–x17 carry nothing at off: from off on, every one of them is written before it is read, up to a bl (a call clobbers them all; DRAGON QUEST VII Reimagined's gate sits on the
-    mov x0, x19 before one). Only straight-line code is followed: a branch, a blr or a ret before the bl answers no"""
+    mov x0, x19 before one) or a ret (none of them carries a result under AAPCS64; Pikmin 4's gate sits on the ldp x29, x30 of an epilogue). Only straight-line code is followed: a branch
+    or a blr before the bl or ret answers no"""
     written = set()
     for a in range(off, min(off + 4 * 16, TEXT_END), 4):
         ins = dis(struct.unpack_from('<I', IMG, a)[0], a)
-        if ins.mnemonic == 'bl': return True
-        if ins.mnemonic in ('b', 'br', 'blr', 'ret', 'cbz', 'cbnz', 'tbz', 'tbnz') or ins.mnemonic.startswith('b.'): return False
+        if ins.mnemonic in ('bl', 'ret'): return True
+        if ins.mnemonic in ('b', 'br', 'blr', 'cbz', 'cbnz', 'tbz', 'tbnz') or ins.mnemonic.startswith('b.'): return False
         rd, wr = regset(ins)
         if any(9 <= (num(r) or -1) <= 17 and num(r) not in written for r in rd): return False
         written |= {num(r) for r in wr}

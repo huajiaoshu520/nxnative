@@ -273,22 +273,33 @@ void front_run(void (*guest)(void)) {
 }
 
 // Software keyboard input box (front.h): the main thread shows an NSAlert + text field and the guest thread waits synchronously for the result. Not shown in windowless mode (returns -1, the caller treats it as cancel)
+extern int g_swkbd_min_chars;   // hle_swkbd.c: this input's minimum length from ShowKeyboardArg; the applet keeps OK disabled until the text is long enough
 int front_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int out_cap) {
     if (!g_layer) return -1;
     __block int r = 0;
     __block NSString *text = nil;
     dispatch_sync(dispatch_get_main_queue(), ^{
-        NSAlert *a = [NSAlert new];
-        a.messageText = title && *title ? @(title) : @"Input";
+        // The box takes the keyboard and the mouse, so the game window never sees the key-up of the button or the touch-up of the click that opened it: nothing may stay pressed
+        // while it is up, or the game reads the stuck button / touch the moment the box closes (Stardew Valley's character creation re-opened the keyboard endlessly)
+        g_btn = 0; g_w = g_a = g_s = g_d = 0; push();
+        dm_touch_set(NULL, 0);
+        int min_chars = g_swkbd_min_chars > 0 ? g_swkbd_min_chars : 0;
         NSString *info = [NSString stringWithFormat:@"%s%s%s", sub ? sub : "", sub && *sub && guide && *guide ? "\n" : "", guide ? guide : ""];
-        a.informativeText = info;
-        [a addButtonWithTitle:@"OK"]; [a addButtonWithTitle:@"Cancel"];
-        NSTextField *f = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 300, 24)];
-        f.stringValue = initial ? @(initial) : @"";
-        if (guide && *guide) f.placeholderString = @(guide);
-        a.accessoryView = f; a.window.initialFirstResponder = f;
-        r = [a runModal] == NSAlertFirstButtonReturn;
-        text = f.stringValue;
+        for (;;) {
+            NSAlert *a = [NSAlert new];
+            a.messageText = title && *title ? @(title) : @"Input";
+            a.informativeText = info;
+            [a addButtonWithTitle:@"OK"]; [a addButtonWithTitle:@"Cancel"];
+            NSTextField *f = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 300, 24)];
+            f.stringValue = text ?: (initial ? @(initial) : @"");
+            if (guide && *guide) f.placeholderString = @(guide);
+            a.accessoryView = f; a.window.initialFirstResponder = f;
+            r = [a runModal] == NSAlertFirstButtonReturn;
+            text = f.stringValue;
+            if (!r || (int)text.length >= min_chars) break;
+            // On hardware the applet would not have accepted the shorter text (OK stayed disabled); a game that rejects it re-opens the keyboard for ever, so the box comes back with the rule instead
+            info = [info stringByAppendingFormat:@"\nAt least %d characters are needed here.", min_chars];
+        }
     });
     if (!r) return 0;
     (void)max_chars;                              // Truncation is done uniformly in hle_swkbd.c in UTF-16 units

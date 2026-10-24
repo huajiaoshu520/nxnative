@@ -698,6 +698,267 @@ def bdt_shaders(path, rel, ents, out):
             for nm, b in bnd3_members(d, label):
                 if b[:4] == b'\x91\x68\x86\x19': out.extend(glslc_shaders(b, f'{label}/{nm}'))
 
+class LzxError(Exception): pass
+
+# MonoGame's compressed XNB (Stardew Valley: 3,535 of its 3,549 .xnb files): ContentManager.cs knows
+# ContentCompressedLzx = 0x80 and ContentCompressedLz4 = 0x40 (XNA's LZX flag was 0x40, MonoGame's own writer
+# uses these). The LZX is as XMemCompress writes it: a CHMLib-style LZX decoder (jedwing/CHMLib src/lzx.c, from
+# cabextract) with a 2^16 window, inside XNB block framing (MonoGame's LzxDecoderStream): each block is two
+# bytes, 0xff then the u16be output and input sizes, or the u16be input size with an 0x8000 output. The LZ4 is
+# one raw LZ4 block (its Lz4DecoderStream)
+LZX_EXTRA = (0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14,
+             15, 15, 16, 16, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17)
+LZX_BASE = (0, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072,
+            4096, 6144, 8192, 12288, 16384, 24576, 32768, 49152, 65536, 98304, 131072, 196608, 262144, 393216,
+            524288, 655360, 786432, 917504, 1048576, 1179648, 1310720, 1441792, 1572864, 1703936, 1835008, 1966080, 2097152)
+
+def _lzx_table(nsyms, nbits, length):
+    """make_decode_table: a huffman lookup table out of canonical code lengths (David Tritscher's, as in cabextract)"""
+    table = [0] * ((1 << nbits) + nsyms * 2)
+    pos, bit_num, table_mask = 0, 1, 1 << nbits
+    bit_mask = table_mask >> 1
+    next_symbol = bit_mask
+    while bit_num <= nbits:
+        for sym in range(nsyms):
+            if length[sym] == bit_num:
+                leaf = pos
+                pos += bit_mask
+                if pos > table_mask: raise LzxError('decode table overrun')
+                for i in range(leaf, pos): table[i] = sym
+        bit_mask >>= 1; bit_num += 1
+    if pos != table_mask:
+        for sym in range(pos, table_mask): table[sym] = 0
+        pos <<= 16; table_mask <<= 16; bit_mask = 1 << 15
+        while bit_num <= 16:
+            for sym in range(nsyms):
+                if length[sym] == bit_num:
+                    leaf = pos >> 16
+                    for fill in range(bit_num - nbits):
+                        if table[leaf] == 0:
+                            table[next_symbol << 1] = 0
+                            table[(next_symbol << 1) + 1] = 0
+                            table[leaf] = next_symbol; next_symbol += 1
+                        leaf = table[leaf] << 1
+                        if (pos >> (15 - fill)) & 1: leaf += 1
+                    table[leaf] = sym
+                    pos += bit_mask
+                    if pos > table_mask: raise LzxError('decode table overflow')
+            bit_mask >>= 1; bit_num += 1
+    if pos != table_mask and any(length[:nsyms]): raise LzxError('a bad or incomplete huffman table')
+    return table
+
+class LzxState:
+    """The decoder state, which lives for the whole XNB: the ring window, the LRU offsets and the block in progress"""
+    def __init__(self, window_bits=16):
+        self.window_size = 1 << window_bits
+        self.window = bytearray(self.window_size)
+        self.posn = 0
+        self.R0 = self.R1 = self.R2 = 1
+        self.main_elements = 256 + ((window_bits << 1) << 3)   # position slots: window<<1
+        self.header_read = False
+        self.block_type = 0
+        self.block_remaining = 0
+        self.intel_filesize = 0
+        self.intel_curpos = 0
+        self.intel_started = False
+        self.frames_read = 0
+        self.main_len = bytearray(256 + 50 * 8 + 64)   # + LZX_LENTABLE_SAFETY: deltas are applied to them across blocks
+        self.length_len = bytearray(249 + 1 + 64)
+        self.main_tbl = self.length_tbl = self.al_tbl = None   # an LZX block can span XNB frames, so the tables persist with the state
+        self.al_len = None
+        self.d = b''
+        self.ip = 0
+        self.bb = 0
+        self.bl = 0
+
+    def _ensure(self, n):
+        while self.bl < n:
+            self.bb = (self.bb << 16) | (self.d[self.ip] | (self.d[self.ip + 1] << 8) if self.ip + 1 < len(self.d) else 0)   # a 16-bit overread past the block end is allowed, as in the C code
+            self.bl += 16; self.ip += 2
+
+    def _remove(self, n): self.bl -= n; self.bb &= (1 << self.bl) - 1
+
+    def _read(self, n):
+        self._ensure(n)
+        v = self.bb >> (self.bl - n)
+        self._remove(n)
+        return v
+
+    def _huffsym(self, table, nbits, maxsyms, lens):
+        self._ensure(16)
+        i = table[self.bb >> (self.bl - nbits)]
+        if i >= maxsyms:
+            k = 0
+            while True:
+                if self.bl - nbits - 1 - k < 0: raise LzxError('a huffman code longer than the bitstream')
+                i = (i << 1) | ((self.bb >> (self.bl - nbits - 1 - k)) & 1)
+                k += 1
+                i = table[i]
+                if i < maxsyms: break
+        self._remove(lens[i])
+        return i
+
+    def _read_lens(self, lens, first, last):
+        pre_len = [self._read(4) for _ in range(20)]
+        pre = _lzx_table(20, 6, pre_len)
+        x = first
+        while x < last:
+            z = self._huffsym(pre, 6, 20, pre_len)
+            if z == 17:
+                y = self._read(4) + 4
+                while y: lens[x] = 0; x += 1; y -= 1
+            elif z == 18:
+                y = self._read(5) + 20
+                while y: lens[x] = 0; x += 1; y -= 1
+            elif z == 19:
+                y = self._read(1) + 4
+                z = self._huffsym(pre, 6, 20, pre_len)
+                z = lens[x] - z
+                if z < 0: z += 17
+                while y: lens[x] = z; x += 1; y -= 1
+            else:
+                z = lens[x] - z
+                if z < 0: z += 17
+                lens[x] = z; x += 1
+
+    def decompress(self, src, outlen):
+        self.d, self.ip, self.bb, self.bl = src, 0, 0, 0
+        togo = outlen
+        if not self.header_read:
+            if self._read(1):
+                self.intel_filesize = (self._read(16) << 16) | self._read(16)
+            self.header_read = True
+        while togo > 0:
+            if self.block_remaining == 0:
+                if self.block_type == 3:   # after an uncompressed block the bitstream returns to a byte boundary
+                    if self.block_length & 1: self.ip += 1
+                    self.bb = 0; self.bl = 0
+                self.block_type = self._read(3)
+                self.block_remaining = self.block_length = (self._read(16) << 8) | self._read(8)
+                al_table = pre = None
+                if self.block_type == 2:
+                    self.al_len = [self._read(3) for _ in range(8)]
+                    self.al_tbl = _lzx_table(8, 7, self.al_len)
+                if self.block_type in (1, 2):
+                    self._read_lens(self.main_len, 0, 256)   # the lengths are deltas against the previous block's, so they persist
+                    self._read_lens(self.main_len, 256, self.main_elements)
+                    self.main_tbl = _lzx_table(256 + 50 * 8, 12, self.main_len)
+                    if self.main_len[0xE8]: self.intel_started = True
+                    self._read_lens(self.length_len, 0, 249)
+                    self.length_tbl = _lzx_table(249 + 1, 12, self.length_len)
+                elif self.block_type == 3:
+                    self.intel_started = True
+                    self._ensure(16)
+                    if self.bl > 16: self.ip -= 2   # align the bitstream, as the C code does (the bits stay in the buffer)
+                    self.R0 = int.from_bytes(self.d[self.ip:self.ip + 4], 'little'); self.ip += 4
+                    self.R1 = int.from_bytes(self.d[self.ip:self.ip + 4], 'little'); self.ip += 4
+                    self.R2 = int.from_bytes(self.d[self.ip:self.ip + 4], 'little'); self.ip += 4
+                else: raise LzxError(f'block type {self.block_type}')
+            if self.ip > len(self.d) and (self.ip > len(self.d) + 2 or self.bl < 16): raise LzxError('the block ended early')
+            this_run = min(self.block_remaining, togo)
+            togo -= this_run
+            self.block_remaining -= this_run
+            self.posn &= self.window_size - 1
+            if self.posn + this_run > self.window_size: raise LzxError('a run straddles the window')
+            posn = self.posn
+            if self.block_type == 3:
+                if self.ip + this_run > len(self.d): raise LzxError('the uncompressed block runs past the block')
+                self.window[posn:posn + this_run] = self.d[self.ip:self.ip + this_run]
+                self.ip += this_run; posn += this_run
+            else:
+                main, length, al_table, al_len = self.main_tbl, self.length_tbl, self.al_tbl, self.al_len
+                while this_run > 0:
+                    main_element = self._huffsym(main, 12, 256 + 50 * 8, self.main_len)
+                    if main_element < 256:
+                        self.window[posn] = main_element; posn += 1; this_run -= 1
+                        continue
+                    main_element -= 256
+                    match_length = main_element & 7
+                    if match_length == 7:
+                        match_length += self._huffsym(length, 12, 249 + 1, self.length_len)
+                    match_length += 2
+                    match_offset = main_element >> 3
+                    if match_offset > 2:
+                        if self.block_type == 2:
+                            extra = LZX_EXTRA[match_offset]
+                            match_offset = LZX_BASE[match_offset] - 2
+                            if extra > 3:
+                                extra -= 3
+                                match_offset += (self._read(extra) << 3) + self._huffsym(al_table, 7, 8, al_len)
+                            elif extra == 3:
+                                match_offset += self._huffsym(al_table, 7, 8, al_len)
+                            elif extra > 0:
+                                match_offset += self._read(extra)
+                            else:
+                                match_offset = 1
+                        else:
+                            if match_offset != 3:
+                                match_offset = LZX_BASE[match_offset] - 2 + self._read(LZX_EXTRA[match_offset])
+                            else:
+                                match_offset = 1
+                        self.R2, self.R1, self.R0 = self.R1, self.R0, match_offset
+                    elif match_offset == 0: match_offset = self.R0
+                    elif match_offset == 1: match_offset = self.R1; self.R1, self.R0 = self.R0, match_offset
+                    else: match_offset = self.R2; self.R2, self.R0 = self.R0, match_offset
+                    posn += match_length
+                    if posn > self.window_size: raise LzxError('a match overruns the window')
+                    this_run -= match_length
+                    src = posn - match_length - match_offset
+                    if src < 0: src += self.window_size
+                    if match_offset >= match_length and src + match_length <= self.window_size:
+                        self.window[posn - match_length:posn] = self.window[src:src + match_length]
+                    else:
+                        w = self.window; dst = posn - match_length
+                        for i in range(match_length): w[dst + i] = w[(src + i) % self.window_size]
+            self.posn = posn
+        start = self.posn - outlen if self.posn else self.window_size - outlen
+        out = bytes(self.window[start:self.posn or self.window_size])
+        self.frames_read += 1
+        if self.frames_read <= 32768 and self.intel_filesize != 0:   # the Intel E8 transform
+            if outlen <= 6 or not self.intel_started:
+                self.intel_curpos += outlen
+            else:
+                data = bytearray(out)
+                curpos, filesize, pos, end = self.intel_curpos, self.intel_filesize, 0, outlen - 10
+                self.intel_curpos = curpos + outlen
+                while pos < end:
+                    b = data[pos]; pos += 1
+                    if b != 0xE8: curpos += 1; continue
+                    abs_off = int.from_bytes(data[pos:pos + 4], 'little', signed=True)
+                    if -curpos <= abs_off < filesize:
+                        rel_off = abs_off - curpos if abs_off >= 0 else abs_off + filesize
+                        data[pos:pos + 4] = (rel_off & 0xFFFFFFFF).to_bytes(4, 'little')
+                    pos += 4
+                    curpos += 5
+                out = bytes(data)
+        return out
+
+def xnb_decompress(d, first_block=False):
+    """The decompressed content of a compressed XNB (flags 0x80 LZX, 0x40 LZ4; the u32 at 6 is the file size,
+    the u32 at 10 the decompressed size). first_block stops after the first LZX block: the reader names sit
+    at the start of the content, so an effect file is recognized there without decompressing the rest"""
+    dec_size = struct.unpack_from('<I', d, 10)[0]
+    body = d[14:struct.unpack_from('<I', d, 6)[0]]
+    if d[5] & 0x80:
+        st = LzxState(16)
+        out = bytearray(); p = 0
+        while len(out) < dec_size:
+            hi = body[p]; p += 1
+            if hi == 0xFF:
+                dst_size = (body[p] << 8) | body[p + 1]; src_size = (body[p + 2] << 8) | body[p + 3]; p += 4
+            else:
+                dst_size = 0x8000
+                src_size = (hi << 8) | body[p]; p += 1
+            if src_size == 0 or dst_size == 0: break
+            out += st.decompress(body[p:p + src_size], dst_size)
+            p += src_size
+            if first_block: break
+        return bytes(out)
+    if d[5] & 0x40:
+        import lz4.block
+        return lz4.block.decompress(body, uncompressed_size=dec_size)
+    return d[14:]
+
 class _Rd:   # a little-endian reader over bytes, with .NET's BinaryReader strings (7-bit encoded length + UTF-8)
     def __init__(s, d, p): s.d, s.p = d, p
     def u8(s): s.p += 1; return s.d[s.p - 1]
@@ -727,7 +988,11 @@ def mgfx_effect(d, p, label):
         if r.u8(): red(f'{label} MGFX @{p:#x}: annotations (MonoGame writes none)')
     out = []
     for i in range(r.u8()):
-        vs, n = r.u8(), r.un('<I'); bc = r.raw(n)
+        vs, n = r.u8(), r.un('<I')
+        if r.p + n > len(d):   # a shader whose length runs past the data: a stray 'MGFX' in other content, not an effect
+            if label.endswith('.xnb'): red(f'{label} MGFX @{p:#x}: shader {i} claims {n:#x} bytes past the end of the file')
+            return None
+        bc = r.raw(n)
         nctl = struct.unpack_from('<I', bc, 0)[0]; ncode = struct.unpack_from('<I', bc, 4 + nctl)[0] if 8 + nctl <= n else -1
         if vs > 1 or 8 + nctl + ncode != n: red(f'{label} MGFX @{p:#x} shader {i}: {n:#x} bytes, not a control section and a code area')
         ctl, code = bc[4:4 + nctl], bc[8 + nctl:]
@@ -1270,6 +1535,13 @@ def scan_file(args):
         return rel, uniq_keys(found), var_pairs(found), trees
     d = unzs(path) if head[:4] == ZSTD_MAGIC else open(path, 'rb').read()   # by the magic: Paper Mario: The Thousand-Year Door names its zstd files .zst (8,726, its shaders among them)
     if d[:4] == b'Yaz0': d = yaz0(d)
+    if d[:3] == b'XNB' and d[4] == 5 and d[5] & 0xC0 and len(d) > 14:   # a compressed XNB (Stardew Valley: 3,535 LZ4 files, 8 LZX): only effects (EffectReader) carry MGFX shaders, and for LZX the reader names sit in the first block, so it decides whether the rest is worth decoding
+        if d[5] & 0x80:
+            head_d = xnb_decompress(d, first_block=True)
+            if b'EffectReader' not in head_d: return rel, {}, set(), {}
+            d = head_d if len(head_d) >= struct.unpack_from('<I', d, 10)[0] else xnb_decompress(d)
+        else:
+            d = xnb_decompress(d)
     if d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
         import unityfs
         try: unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
