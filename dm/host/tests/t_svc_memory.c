@@ -37,6 +37,13 @@ void guest_clock_read_wait(void) {}
 uint64_t guest_ns(void) { return 0; }
 uint64_t dm_entropy64(void) { return 0; }
 int thr_limit_used(void) { return 0; }
+// This fixture has no Unreal allocator installed. Tests may register a real
+// backing range to exercise stacks allocated outside the guest address block.
+static uintptr_t ue_heap_base;
+static size_t ue_heap_size;
+int dm_ue_heap_owns(uint64_t a, uint64_t n) {
+    return ue_heap_size && memory_contains(ue_heap_base, ue_heap_size, a, n);
+}
 module_t *module_of(const void *p) {
     uintptr_t a = (uintptr_t)p;
     for (int i = 0; i < g_nmod; ++i) {
@@ -235,6 +242,25 @@ static void module_sources(void) {
     g_mod[0].nro = 1;
     assert(map(stack, (uintptr_t)b + 0x4000, P) == BAD);
     g_nmod = 0; memset(g_mod, 0, sizeof g_mod); assert(!munmap(b, 0x20000));
+}
+
+static void external_heap_source(void) {
+    size_t n = 2 * memory_getpagesize();
+    uint8_t *b = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    assert(b != MAP_FAILED);
+    assert(map(stack, (uintptr_t)b, P) == BAD);
+    ue_heap_base = (uintptr_t)b; ue_heap_size = n;
+    memset(b, 0x45, n);
+    assert(map(stack, ue_heap_base - P, 2 * P) == BAD);
+    assert(map(stack, ue_heap_base + n - P, 2 * P) == BAD);
+    assert(!map(stack, ue_heap_base, n));
+    assert(*(uint8_t *)stack == 0x45);
+    memset((void *)stack, 0x67, n);
+    assert(!unmap(stack, ue_heap_base, n));
+    for (size_t i = 0; i < n; ++i) assert(b[i] == 0x67);
+    ue_heap_base = 0; ue_heap_size = 0;
+    assert(map(stack, (uintptr_t)b, P) == BAD);
+    assert(!munmap(b, n));
 }
 
 // Apple has no pthread_barrier. The gate makes races deterministic at entry,
@@ -457,7 +483,7 @@ int main(int argc, char **argv) {
     for (unsigned i = 0; i < 8; ++i) assert(!pthread_create(&threads[i], NULL, init_worker, &addresses[i]));
     for (unsigned i = 0; i < 8; ++i) { assert(!pthread_join(threads[i], NULL)); assert(addresses[i] == addresses[0]); }
     alias = addresses[0]; stack = info(I_StackAddr); heap = info(I_HeapAddr);
-    lazy_commit(); alias_lifecycle(); ownership(); module_sources(); failures(); concurrency(); fragmented_queries();
+    lazy_commit(); alias_lifecycle(); ownership(); module_sources(); external_heap_source(); failures(); concurrency(); fragmented_queries();
     guest_helper();
     if (!DM_GAME_MEM_MAP_LIMIT) metadata_limit();
 #ifdef TEST_REAL_DIRTY
