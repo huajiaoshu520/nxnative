@@ -49,26 +49,67 @@ private final class LauncherModel: ObservableObject {
 private struct SettingRow: View {
     let s: Setting
     @ObservedObject var m: LauncherModel
+
+    private var locked: Bool { m.fromFile.contains(s.env) }
+    private var note: String {
+        locked ? (s.note.isEmpty ? "" : s.note + " · ") + "Set by an env file" : s.note
+    }
+    private var rangeValue: Binding<Double> {
+        Binding(get: { Double(m.values[s.env] ?? s.def) ?? s.max ?? 1 },
+                set: { m.values[s.env] = String(format: "%.2f", $0) })
+    }
+    private var percentage: String { "\(Int((rangeValue.wrappedValue * 100).rounded())) %" }
+
+    private var settingLabel: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(s.label)
+            if !note.isEmpty { Text(note).font(.footnote).foregroundStyle(.secondary) }
+        }
+    }
+
     var body: some View {
-        let locked = m.fromFile.contains(s.env)
-        Section {
+        Group {
             switch s.kind {
             case "choice":
-                Picker(s.label, selection: m.binding(s)) { ForEach(s.options ?? [], id: \.[0]) { Text($0[1]).tag($0[0]) } }
+                Picker(selection: m.binding(s)) {
+                    ForEach(s.options ?? [], id: \.[0]) { Text($0[1]).tag($0[0]) }
+                } label: {
+                    settingLabel
+                }
+                .pickerStyle(.navigationLink)
             case "range":
-                let lo = s.min ?? 0, hi = s.max ?? 1
-                let v = Binding<Double>(get: { Double(m.values[s.env] ?? s.def) ?? hi }, set: { m.values[s.env] = String(format: "%.2f", $0) })
-                HStack {
-                    Text(s.label)
-                    Slider(value: v, in: lo...hi, step: s.step ?? 0.05)
-                    Text("\(Int((v.wrappedValue * 100).rounded())) %").monospacedDigit().foregroundStyle(.secondary).frame(width: 56, alignment: .trailing)
+                NavigationLink {
+                    Form {
+                        Section {
+                            HStack {
+                                Text(s.label)
+                                Spacer()
+                                Text(percentage).monospacedDigit().foregroundStyle(.secondary)
+                            }
+                            Slider(value: rangeValue, in: (s.min ?? 0)...(s.max ?? 1), step: s.step ?? 0.05)
+                                .accessibilityLabel(s.label)
+                                .accessibilityValue(percentage)
+                                .disabled(locked)
+                        } footer: {
+                            if !note.isEmpty { Text(note) }
+                        }
+                    }
+                    .contentMargins(.horizontal, 12, for: .scrollContent)
+                    .navigationTitle(s.label)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar(.visible, for: .navigationBar)
+                } label: {
+                    HStack {
+                        settingLabel
+                        Spacer()
+                        Text(percentage).monospacedDigit().foregroundStyle(.secondary)
+                    }
                 }
             default:
-                Toggle(s.label, isOn: Binding(get: { (m.values[s.env] ?? s.def) == "1" }, set: { m.values[s.env] = $0 ? "1" : "0" }))
+                Toggle(isOn: Binding(get: { (m.values[s.env] ?? s.def) == "1" }, set: { m.values[s.env] = $0 ? "1" : "0" })) {
+                    settingLabel
+                }
             }
-        } footer: {
-            let note = locked ? (s.note.isEmpty ? "" : s.note + " · ") + "Set by an env file" : s.note
-            if !note.isEmpty { Text(note) }
         }
         .disabled(locked)
     }
@@ -80,28 +121,42 @@ private struct LauncherView: View {
     @State private var memory = os_proc_available_memory()
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 16) {
-                if let icon = appIcon() {
-                    Image(uiImage: icon).resizable().frame(width: 96, height: 96).clipShape(RoundedRectangle(cornerRadius: 22))
-                }
-                Text((info("CFBundleDisplayName") as? String) ?? "Game").font(.title.weight(.bold)).multilineTextAlignment(.center)
-                Text("Version \((info("CFBundleShortVersionString") as? String) ?? "")").font(.callout).foregroundStyle(.secondary)
-                playButton
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity)
-            Form {
-                ForEach(m.settings) { SettingRow(s: $0, m: m) }
-                Section {
-                    HStack {
-                        Text("Memory available")
-                        Spacer()
-                        Text(ByteCountFormatter.string(fromByteCount: Int64(memory), countStyle: .memory)).monospacedDigit().foregroundStyle(.secondary)
+        GeometryReader { geometry in
+            HStack(spacing: 0) {
+                VStack(spacing: 16) {
+                    if let icon = appIcon() {
+                        Image(uiImage: icon).resizable().frame(width: 96, height: 96)
+                            .clipShape(RoundedRectangle(cornerRadius: 22))
+                            .accessibilityHidden(true)
                     }
+                    Text((info("CFBundleDisplayName") as? String) ?? "Game")
+                        .font(.title.weight(.bold)).multilineTextAlignment(.center)
+                    Text("Version \((info("CFBundleShortVersionString") as? String) ?? "")")
+                        .font(.callout).foregroundStyle(.secondary)
+                    playButton
                 }
+                .padding(16)
+                .frame(width: geometry.size.width / 3, height: geometry.size.height)
+                NavigationStack {
+                    List {
+                        Section {
+                            ForEach(m.settings) { SettingRow(s: $0, m: m) }
+                        }
+                        Section {
+                            HStack {
+                                Text("Memory available")
+                                Spacer()
+                                Text(ByteCountFormatter.string(fromByteCount: Int64(memory), countStyle: .memory)).monospacedDigit().foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .listStyle(.insetGrouped)
+                    .contentMargins(.horizontal, 12, for: .scrollContent)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar(.hidden, for: .navigationBar)
+                }
+                .frame(width: geometry.size.width * 2 / 3)
             }
-            .frame(maxWidth: .infinity)
         }
         .preferredColorScheme(.dark)
         .task {

@@ -37,6 +37,13 @@ jobs:
         run: |
           mkdir -p logs
           make -C dm/host/tests GAME="$GAME" -j3 run 2>&1 | tee logs/host-tests.log
+      - name: ThreadSanitizer (audio and guest memory)
+        run: |
+          make -C dm/host/tests GAME="$GAME" -j3 tsan memory-tsan 2>&1 | tee logs/tsan.log
+      - name: CPU texture layout and deswizzle tests
+        run: |
+          make -C dm/gfx/tex/tests t_tex 2>&1 | tee logs/texture-build.log
+          dm/gfx/tex/tests/t_tex 2>&1 | tee logs/texture-tests.log
       - name: CPU-only gfx tests (dm/gfx/tests)
         run: |
           mkdir -p logs
@@ -123,5 +130,26 @@ jobs:
         if: failure()
         with:
           name: logs-build
+          path: logs
+          retention-days: 7
+
+  ios-build:
+    name: Unsigned iOS app (synthetic modules, Swift and link)
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install XcodeGen
+        run: command -v xcodegen || brew install xcodegen
+      - name: Build the production iOS project with synthetic inputs
+        run: |
+          mkdir -p logs
+          python3 dm/ios/tools/build_smoke.py --output "$RUNNER_TEMP/ios-smoke" 2>&1 | tee logs/ios-build.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: logs-ios-build
           path: logs
           retention-days: 7

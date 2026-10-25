@@ -109,9 +109,16 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Note:** `CustomShaderPackage.mfx` (`MFX\0`, the effect descriptions) holds no shader code, and neither `main` nor any other ARC entry does.
 - **Found on:** [The Great Ace Attorney Chronicles](../../dm/games/010036E00FB20000/README.md) (Capcom's MT Framework): all 460 build, with Mario's binding layout; every binding decodes.
 
+### PKZ version 1 archives
+
+- **Symptom:** `[RED] ... PKZ version 0x10000: only 0x20000 is known` stops the shader split.
+- **Cause:** the PKZ reader accepted only the version first found on Bayonetta 3. Version `0x10000` uses the same 0x20-byte header, 0x20-byte entries and relative name offsets; the last header word is zero rather than a v2 alignment. The named compression method still determines how each entry is decoded.
+- **Fix:** `shader_split.py` accepts both `0x10000` and `0x20000`, retaining rejection of unknown versions. The existing Zstandard decoder and DAT/shader scanners handle the contents. Synthetic directory fixtures cover both versions in `dm/gfx/tests/test_pkz.py`.
+- **Found on:** [ASTRAL CHAIN](../../dm/games/01007300020FA000/README.md).
+
 ### PlatinumGames' shader objects
 
-- PlatinumGames' shader objects: `VSO\0` / `PSO\0` / `CSO\0` / `HSO\0` / `DSO\0` (the stage), u32 compiler version, u32 control length, u32 control offset (0x18), u32 code length, u32 code offset, and nothing else. The engine makes a program of each and binds them per stage at draw time, so they are single-stage programs, paired with a cover pixel shader (`shader_split.py` `pg_shader`; the archives: [01](../agents/01-extract.md)). It finds its built-in ones by name (`hwfillcolor.vso`, …) and checks each object's GPU code version against the driver's (the NVN layer's newest GPU code version follows the SDK: [Newest GPU code version reported by the driver](nvn-objects.md#newest-gpu-code-version-reported-by-the-driver), SDK 13.3.2).
+- PlatinumGames' shader objects: `VSO\0` / `PSO\0` / `CSO\0` / `HSO\0` / `DSO\0` (the stage), u32 compiler version, u32 control length, u32 control offset (0x18), u32 code length, u32 code offset, and nothing else. The engine makes a program of each and binds them per stage at draw time, so they are single-stage programs, paired with a cover pixel shader (`shader_split.py` `pg_shader`; the archives: [01](../agents/01-extract.md)). It finds its built-in ones by name (`hwfillcolor.vso`, …) and checks each object's GPU code version against the driver's (the NVN layer reports the translator's supported GPU-code range: [Newest GPU code version reported by the driver](nvn-objects.md#newest-gpu-code-version-reported-by-the-driver), SDK 13.3.2).
 - **Found on:** [Bayonetta 3](../../dm/games/01004A4010FEA000/README.md): 8,024 objects in `root_000.pkz` (`shader.dat`, `shader2.dat`, `shadereff*.dat`, `autoshadereff.dat`); 6,424 distinct keys (4,288 pixel, 2,047 vertex, 78 compute, 6 domain, 5 hull).
 
 ### BNSH files in PlatinumGames DAT archives inside CRI CPK archives
@@ -552,7 +559,7 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 - **Symptom:** a null read at `main+0x3316dc` in `nnMain`, right after the window setup (the program object's interface pointers at +0xd0 / +0xd8 both null).
 - **Cause:** the game compiles two built-in programs at boot with its own GLSLC (`subsdk0`, the same build as Link's Awakening's), and first checks that GLSLC's GPU code version against `nvnDeviceGetInteger` items 0x2E–0x31 (the driver's supported range, `main+0x330dcc`). The host reported Super Mario Odyssey's SDK 7 driver range, 1.5–1.14; this GLSLC writes 1.15, so nothing was compiled and the first uniform lookup read the empty program.
-- **Fix:** every SDK's driver runs the code of the GLSLC in the same SDK, so the host now reports at least the version the game's own `glslcGetVersion` returns (`hle_glslc.c` `dm_glslc_gpu_code`, `hle_nvn.c`). The newest version the host reports also follows the SDK since Bayonetta 3 ([Newest GPU code version reported by the driver](nvn-objects.md#newest-gpu-code-version-reported-by-the-driver)).
+- **Fix:** every SDK's driver runs the code of the GLSLC in the same SDK, so the host now reports at least the version the game's own `glslcGetVersion` returns (`hle_glslc.c` `dm_glslc_gpu_code`, `hle_nvn.c`). The host also advertises the translator's supported range for precompiled shaders ([Newest GPU code version reported by the driver](nvn-objects.md#newest-gpu-code-version-reported-by-the-driver)).
 - **Found on:** [Catherine: Full Body](../../dm/games/0100BF00112C0000/README.md) (SDK 8.2.1, Atlus's GFD engine, CRI middleware; one boot).
 
 ## Pipelines and caches

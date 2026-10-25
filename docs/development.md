@@ -49,6 +49,28 @@ and `memory-tsan`; `memory` includes undefined-behavior and address sanitizers.
 The heap-probe check imports the production profile reader and needs only the
 Python standard library; LZ4 is loaded when decoding NSO files.
 
+## Continuous integration
+
+`.github/workflows/tests.yml` runs host and CPU graphics tests, Python tool
+tests, Mac builds for NVN/Vulkan/OpenGL profiles, and iOS source compilation.
+It also runs the CPU texture layout/deswizzle test (`dm/gfx/tex/tests/t_tex`)
+and the host's `tsan` and `memory-tsan` targets for audio and memory races.
+The texture format test (`t_fmt_mtl`) creates Metal textures and stays local.
+
+A separate iOS job uses XcodeGen and the production project template to compile
+`Launcher.swift`, link the complete app and stage synthetic resources. It uses
+tiny zero-filled embedded modules, needs no game files or keys, and neither
+signs nor installs the app. This checks build integration, not game execution.
+To reproduce it with Xcode and XcodeGen installed, choose a new scratch folder:
+
+```sh
+GAME=010015100B514000 python3 dm/ios/tools/build_smoke.py --output /path/to/scratch/ios-smoke
+```
+
+Generated projects and Xcode build products stay in that folder; the host profile
+header is generated under `dm/host/gen/` as usual. CI uploads failure logs.
+GPU regression tests still run locally with `make -C dm/gfx/tests GAME=<id> run`.
+
 ## The packing script in detail
 
 `scripts/build_ipa_from_nsp.py` (`-h` lists every option):
@@ -83,7 +105,12 @@ python3 scripts/build_ipa_from_nsp.py ~/Games/MarioGalaxy -k ~/keys/prod.keys --
 
 # development: build only what running the game on this Mac needs (no iOS shaders, Xcode project or IPA) and print the command that runs it
 python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys --platform mac
+
+# the same, then a double-clickable Mac app of the game in the NSP folder (<game name>.app), signed with your Developer ID instead of ad-hoc
+python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys --platform mac-app --mac-sign "Developer ID Application: <name> (<team ID>)"
 ```
+
+`--platform` takes `ios` (the default: the IPA, or the Xcode project with `--prepare-xcode`), `mac` ([A Mac-only build for development](#a-mac-only-build-for-development)) and `mac-app` ([A Mac app](#a-mac-app)).
 
 In Spyder, open the script, fill in the settings at the top (`NSP_DIR`, `PROD_KEYS`, and optionally `PACKAGE`, `OUT_IPA`, `APP_NAME`, `BUNDLE_ID`, `LANGUAGE`, `KEEP_EXTRACTED`, `SHOW_FPS`, `PLATFORM`; for a game without a profile `HEAP_CHECK`, `HEAP_CHECK_SECS`, `PROVISIONAL`), and press F5. Empty paths are asked for at run time.
 
@@ -125,7 +152,7 @@ Haptic engines are created on demand, after the game has activated its audio ses
 
 ### A Mac-only build for development
 
-The Mac is the development host, not a platform for players: there is no Mac app. To test or debug a game on the Mac, `--platform mac` (`PLATFORM = 'mac'` in Spyder) builds only what running it in the Mac host needs, from the same NSP folder:
+The Mac is the development host. To test or debug a game on the Mac, `--platform mac` (`PLATFORM = 'mac'` in Spyder) builds only what running it in the Mac host needs, from the same NSP folder:
 - the same steps up to the shaders: extraction, rewrite, run-time shader captures and decodes, a provisional profile's heap check and the shader split;
 - the Mac shader libraries only: `dmsh_build.py` without `IOSOUT` into `<id>_build/shader/cache/b-<chain>/`, which a full build stamps with the profile's inputs (`inputs.tsv`) and from which it makes the profile's `c1_full.tsv` and `cb_extent.tsv`, or a Vulkan or GL game's library without `--ios` into `<id>_build/shader/vk/` or `gl/`;
 - the Mac host for the profile into `<id>_build/tools/dmhost`: the compile line of `make -C dm/host GAME=<id> dmhost`, with a provisional or derived profile through `DM_GAMES_DIR` / `DM_GAMES_FIRST` as for the script's other host builds. It is reused while its sources (the chain header `dm/gfx/nvn/dmsh_chain.h` among them), the generated profile header, libvpx and the compiler are unchanged;
@@ -140,6 +167,34 @@ cd "<NSP folder>/<id>_build/run" && DM_ROOT="<NSP folder>/<id>_build" DM_ROMFS="
 The save is in `<id>_build/run/save` and stays there from run to run. `DM_AOC_DIR` is added when the folder has DLC. `DM_NVN_SHMAP` is added for an NVN game; it names the profile's shader map, or the derived or provisional profile's. A Vulkan or GL game's `DM_MSL_DIR` is `<id>_build/shader`. The switches of `--env-file` are added to the command.
 
 Reuse works as for the IPA. Each shader output has its own key, named after the one chain version: `shader/ios/b-<chain>.key` for the iOS libraries and `shader/mac-b-<chain>.key` for the Mac's (`shader/ios/vk.key` and `shader/vk.key` for a Vulkan game, the same with `gl` for a GL game). An iOS build writes both keys, since it builds the Mac's libraries too, so a Mac-only build of a folder already packed as an IPA reuses its shaders. Either key is taken only while the Mac libraries carry a full build's stamp; `c1_full.tsv` or `cb_extent.tsv` that does not name it is made again from them, as for the IPA. An iOS build after a Mac-only build still has the iPhone's libraries to make. It translates the shaders again, because `dmsh_build.py`'s per-shader cache keys include the iOS compile convention. It then takes the Mac libraries from the Metal compile cache (`shader/cache/cas/metallib`) and compiles only the iPhone's.
+
+### A Mac app
+
+`--platform mac-app` (`PLATFORM = 'mac-app'` in Spyder) builds everything `--platform mac` builds, then packs a Mac app of the game with `dm/mac/pack_app.py`. The app is `<NSP folder>/<game name>.app` (a `:` or `/` in the name becomes ` - `); `-o` names another path ending in `.app`. Open it from Finder, from any folder: it does not need the build folder or the drive it is on. Like the Mac host, it needs a Mac with Apple silicon. Its name, version and bundle ID are the IPA's: the game name and display version from the control data, and `org.nxnative.<title ID>`. Its icon is the game's icon as `AppIcon.icns` (`sips`, `iconutil`).
+
+The bundle holds what the IPA holds, with the Mac's shader libraries:
+
+```
+<game name>.app/Contents/
+  Info.plist                 name, version, bundle ID, the profile's app_category; DMTitleID, DMRomfsMarker, DMLanguage and DMModuleFiles for the launcher
+  MacOS/nxnative             the launcher (dm/mac/launcher.c, compiled by pack_app.py)
+  MacOS/dmhost               the Mac host built for the profile
+  Resources/romfs/           the packed version's RomFS
+  Resources/msl/b-<chain>/   the Mac shader libraries (vk/ or gl/ for a Vulkan or GL game), without the compile cache cas/, which the host never reads
+  Resources/aoc/<index>/     the DLC, when the folder has some
+  Resources/dm/              the rewritten modules and their rewriter tables, nro.tsv, the profile's shader_map.tsv, pso_manifest.tsv, c1_full.tsv and cb_extent.tsv, font/, env.txt (--env-file)
+  Resources/AppIcon.icns
+```
+
+The RomFS, the shader libraries and the DLC are APFS clones (`cp -c`) of the build's files when the app is on the same APFS volume, so they take no space of their own; on another volume they are copied, after a check for free space. The app is written as `<app>.partial` and replaces the old one only when it is complete.
+
+The packer records the rewritten module files and their tables in `DMModuleFiles`, and rejects a module without its fixups table. Before starting the host, the launcher checks that every recorded file is readable and is a regular file, so losing a binary and its table together still produces the missing-data alert. The alert passes the game name and message as AppleScript arguments, preserving quotes and backslashes in game names.
+
+The launcher sets the host's environment from the bundle, as the iOS app's `main.m` does, and runs the host as a child process. The save, `pso_user.tsv` and temporary files go to `~/Library/Application Support/nxnative/<title ID>/` (`save/`, `temp/`; that folder is also `DM_ROOT` and the working folder). The host's output goes to `~/Library/Logs/nxnative/<title ID>.log`, and the previous run's is kept as `<title ID>.prev.log`. Environment switches go in `env.txt` in the Application Support folder, then in the bundle's `dm/env.txt` (one `KEY=VALUE` per line). Neither replaces a variable that is already set. The launcher passes SIGTERM, SIGINT and SIGHUP on to the host and returns the host's exit code. When the bundle's game data is missing, it shows an alert.
+
+Why the host is a child process: macOS privacy checks (TCC) cover files on removable volumes. A launcher that hands its process over to the host, such as a shell script that `exec`s `dmhost`, got EPERM on every open on the external drive, with no prompt. That happened with ad-hoc and Developer ID signatures alike, and after `tccutil reset`. A compiled launcher as `CFBundleExecutable` that `posix_spawn`s `dmhost`, which sits beside it in `Contents/MacOS`, can read those files. An app that sits on the game drive needs this, and so does an env file that points at files there.
+
+Signing: `pack_app.py` signs the inner host first, then the bundle (`codesign --force --sign <identity>`). It signs ad-hoc by default; `--mac-sign "<identity>"` (`MAC_SIGN` in Spyder) names a Developer ID or another identity. It never uses the hardened runtime: `--options runtime` refuses the executable memory the host maps for the game's code. Notarization needs the hardened runtime, so the app is not notarized. Gatekeeper blocks it on a Mac it was downloaded to until it is allowed in System Settings › Privacy & Security. `dm/tools/tests/test_nsp_mac_app.py` tests the packer and the launcher with a stand-in host, without game files.
 
 ## Build and run on a device with Xcode
 
