@@ -28,6 +28,7 @@
 #   · data.arc (Super Smash Bros. Ultimate, smash_arc.py): GLSLC outputs in its SSBH shader databases and BNSH in its effects and UI layouts, each of its current files (zstd) scanned, see smash_arc_jobs
 #   · PKZ (PlatinumGames, Bayonetta 3): shader objects (VSO / PSO / CSO / HSO / DSO, a control section and a code area each) in the DAT archives of the PKZ entries (Oodle Kraken, decoded by the
 #       game's own decoder in the Mac host), see pkz_entries, pgdat_members and pg_shader
+#   · CPK (CRI's file system, Bayonetta 2): BNSH files ('.vso' / '.pso') in the PlatinumGames DAT archives of the CPK entries (CRILAYLA entries, cpk.py), see cpk_jobs
 #   · GFPAK (Game Freak, Pokémon Sword): BNSH entries of the archives under bin/archive (LZ4 entries), see gfpak_members
 #   · .tfxo (Silicon Studio's YEBIS post effects, Pokémon Sword): control sections each followed by its code area, in a zlib stream in main, see tfxo_streams and tfxo_shaders
 #   · control sections loose in main, in no GLSLC output or BNSH file (Advance Wars 1+2: Re-Boot Camp's Bink 2 shaders): paired with their code areas by data records or adjacency, see raw_shaders
@@ -407,6 +408,37 @@ def pkz_shaders(path, rel, ents, out):
             else: red(f'/{rel}/{name}: compression {comp!r} is not known')
             if len(d) != usz: red(f'/{rel}/{name}: {len(d)} bytes decoded, the entry says {usz}')
             scan_blob(d, f'/{rel}/{name}', out)
+
+CPK = b'CPK '
+def cpk_jobs(files, parts=64):
+    """Every entry of every CRI CPK archive in ranges of about equal length (Bayonetta 2: six in the RomFS root, 9.5 GB, 6,091 files, 12 GB of them CRILAYLA-compressed; its shaders are BNSH
+    files in shader.dat, shader2.dat and shadereff.dat, but no file name is relied on). → ([(path, rel, entries), …], the CPK paths)"""
+    import cpk
+    with_head = []
+    for p, r in files:
+        if p.lower().endswith('.cpk'):
+            with open(p, 'rb') as f: h = f.read(4)
+            if h != CPK: continue
+            try: with_head.append((p, r, cpk.files(p)))
+            except (ValueError, struct.error, KeyError, UnicodeDecodeError) as e:   # a layout cpk.py does not read: scanned as a loose file, as before CPKs were read (13 Sentinels and Catherine: Full Body were not checked)
+                print(f'[RED] /{r}: the CPK cannot be read ({e}); scanned as one file', flush=True)
+    jobs, step = [], sum(e[3] for _, _, es in with_head for e in es) / parts
+    for p, r, es in with_head:
+        cur, size = [], 0
+        for e in es:
+            cur.append(e); size += e[3]
+            if size >= step: jobs.append((p, r, tuple(cur))); cur, size = [], 0
+        if cur: jobs.append((p, r, tuple(cur)))
+    return jobs, {p for p, _, _ in with_head}
+
+def cpk_shaders(path, rel, ents, out):
+    """A range of CPK entries (cpk_jobs), each decoded (CRILAYLA or stored) and scanned like a loose file"""
+    import cpk
+    for e in ents:
+        try: d = cpk.read(path, e)
+        except (ValueError, IndexError) as x:   # a compression cpk.py does not decode: the entry is left out, and the split goes on
+            print(f'[RED] /{rel}/{e[0]}: {x}; not scanned', flush=True); continue
+        scan_blob(d, f'/{rel}/{e[0]}', out)
 
 def pgdat_members(d, label):
     """A PlatinumGames DAT archive: 'DAT\\0', u32 file count, then the offsets of five tables: file offsets (u32 each), extensions (4 bytes each), names (u32 name length, then one name of that
@@ -1509,6 +1541,9 @@ def scan_file(args):
     if len(args) > 2 and head[:4] == PKZL:   # entries of a PlatinumGames PKZ (pkz_jobs)
         pkz_shaders(path, rel, args[2], found)
         return rel, uniq_keys(found), var_pairs(found), trees
+    if len(args) > 2 and head[:4] == CPK:   # entries of a CRI CPK (cpk_jobs)
+        cpk_shaders(path, rel, args[2], found)
+        return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and head[:4] == KPKA:   # entries of an RE Engine PAK (kpka_jobs)
         kpka_shaders(path, rel, args[2], found)
         return rel, uniq_keys(found), var_pairs(found), trees
@@ -1616,8 +1651,9 @@ def main():
     bd_jobs, bdts = bdt_jobs(files)   # Dark Souls Remastered's dvdbnd archives: the entries of each .bdt by its .bhd5 index, in ranges
     arc_jobs, arcs = smash_arc_jobs(files)   # Super Smash Bros. Ultimate's data.arc: its current files, in ranges
     pz_jobs, pkzs = pkz_jobs(files)   # Bayonetta 3's PKZ archives, Oodle Kraken decoded by the game's own decoder in the Mac host
-    big += pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs
-    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs]
+    ck_jobs, cpks = cpk_jobs(files)   # Bayonetta 2's CRI CPK archives (CRILAYLA entries)
+    big += pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs + ck_jobs
+    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs and p not in cpks]
     with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=(common, {}, zdicts)) as ex:
         results += list(ex.map(scan_file, big)) + list(ex.map(scan_file, files, chunksize=16))
     trees, defer = {}, []

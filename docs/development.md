@@ -14,6 +14,41 @@ The README covers packing and playing. This page is for working on nxnative itse
 | iOS app | One unsigned IPA for iPhone and iPad. The rewritten code is embedded in the executable; the shader libraries, the RomFS and the game icon are inside the app. A settings screen comes before the game (`Launcher.swift`, drawn from `dm/launcher.json`, which `dm/games/settings.py` writes from `dm/games/settings.tsv`); the host's loading starts at app launch meanwhile, and the frame rate and render scale go into the frame step state when the game starts (`loader.c` `dm_fps_state_apply`) |
 | Known gaps | Conditional render is always drawn; `MultiDraw*IndirectCount` waits on the CPU for the GPU-written count; geometry shaders do not translate. TBDR optimizations are off by default (they don't understand bindless textures yet). No amiibo. The bundled prewarm lists are empty. On the Mac, Mario's menu and dialogue text render blank (fine on the iPhone) |
 
+## Guest memory SVCs
+
+`dm/host/hle_svc.c` serializes heap resizing, physical map/unmap, stack
+map/unmap and memory queries with one memory-state lock. The alias bitmap is
+the source of committed/free runs for `QueryMemory` and of committed-byte
+accounting. With `mem_map_limit`, heap growth and physical maps check the same
+application-pool budget; overlapping maps charge only newly committed pages.
+Unexpected host protection failures abort before publishing state, including
+the `SetHeapSize` fail-fast check from PR #127.
+
+`MapMemory` borrows opened heap memory, committed alias memory or writable
+static-module data until an exact unmap copies it back. Another borrow,
+decommit, heap shrink or permission/attribute request cannot invalidate that
+source. Queries report its original state with borrowed attribute bit 0 and
+no user permissions. The implementation still copies bytes: source permissions
+are logical, and native host pages cannot isolate adjacent 4 KiB slices.
+Dynamic NRO backing is rejected because reload can restore it outside this
+ownership lifetime. Host-created guest threads allocate their stack backing
+through SDK malloc and free it after SDK thread destruction/copyback. Physical
+recommit may overlap a borrowed source: SDK allocators extend committed windows
+this way, and existing committed bytes are preserved.
+
+A host-page exposure bitmap preserves lazy zero-fill on first commitment.
+Later commits clear only newly committed logical slices, preserving live
+neighbors on a 16 KiB host page. GPU dirty tracking is notified when a mapping
+opens a host page and before stack copyback. The SDK retains address-region
+reservation ownership and its existing build patches.
+
+`make -C dm/host/tests GAME=<id> run` includes the production-dispatcher memory
+tests, real GPU dirty-tracker integration and heap-probe log compatibility.
+The focused targets are `heap_size`, `memory`, `memory-dirty`, `memory-profile`
+and `memory-tsan`; `memory` includes undefined-behavior and address sanitizers.
+The heap-probe check imports the production profile reader and needs only the
+Python standard library; LZ4 is loaded when decoding NSO files.
+
 ## The packing script in detail
 
 `scripts/build_ipa_from_nsp.py` (`-h` lists every option):
@@ -85,6 +120,8 @@ The game language (`--language`, `LANGUAGE`; English by default) is what `nn::oe
 On the device, environment switches go in `Documents/env.txt` (one `KEY=VALUE` per line), and game files are also accepted at `Documents/romfs`.
 
 Game rumble is enabled by default (`DM_RUMBLE=0` disables it); `DM_RUMBLE_GAIN=0..3` scales its strength (default 1, zero is silent). Both are launcher settings, independent of `DM_TOUCH_HAPTICS`. `hle_hid.c` decodes SDK vibration handles (style index / npad / motor bytes, as in libnx's `_hidGetVibrationDeviceHandles`) and routes them through the same player assignments as input. `hle_haptics.c` retains each motor's two amplitude/frequency bands, commits batches atomically and invalidates queued output on lifecycle or route changes. `haptics_apple.m` provides shared Core Haptics output for Mac controllers and iOS: left/right handle localities when available, otherwise one combined output; on iPhone, the phone is used while no controller is selected. A connected controller without haptics produces no game rumble. Continuous effects keep running until the game stops them; short effects are not extended. Engine resets, focus loss and interruptions clear the old values and require a fresh game signal. The frequency-to-sharpness mapping is approximate and physical feel / controller compatibility require device testing. The headless Mac host has no output. `make -C dm/host/tests GAME=<id> run` covers state and HID routing without hardware.
+
+Haptic engines are created on demand, after the game has activated its audio session. Stop/reset handlers are installed before starting an engine. Idle release, focus loss and engine resets stop an engine but keep it, so the next effect restarts the same one. An engine or player failure releases that connection; fresh game signals retry with a new engine after a 1–8 second backoff, without replaying effects from before the failure. If a controller advertises separate handle localities but those engines cannot be created or started, the route falls back to the controller's default locality until it is reconnected. The log names the controller, localities and output channels, and errors name the failed stage with the error domain/code and underlying service error. The Apple adapter test covers failed creation/start, player and parameter failures, default-locality fallback and stale callbacks using fake controllers and engines; an iOS Settings Identify response alone does not verify the app's own haptics connection.
 
 ### A Mac-only build for development
 
@@ -201,6 +238,19 @@ The lines name shaders by content key and hold no compiled code and nothing pers
 Record on the game version you ship. At launch the log names each list it read and its line count (`pipeline prewarm list …: N lines`), or says that `pso_user.tsv` does not exist yet.
 
 During rendering, a pipeline miss compiles and caches the demanded pipeline before scanning subsequent draws for speculative work. The scan admits at most two new jobs, with at most two speculative compilations outstanding; completed predictions remain available by exact key. This limit does not apply to the startup warmer. `t_pso_pending` checks scheduling and ownership with a gated compiler; it does not establish that the two-job budget is optimal on every device or remove the cost of compiling an unseen pipeline.
+### Pipeline bases and the pipeline archive
+
+Concurrent requests for the same base share its in-progress build and result; unrelated bases can compile in parallel. Rasterizing pipelines without a fragment function use the `MTLDevice` path so depth-only draws keep their depth writes: Metal 4 requires a fragment function when rasterization is enabled. Transform-feedback pipelines, whose rasterization is disabled, can still use Metal 4.
+
+Render pipelines are built through Metal 4's `MTL4Compiler` (`pso_build` in `dm/gfx/nvn/nvn_mtl.m`). `pso_desc` still describes each pipeline; from it the host builds a *base* whose colour attachments (format, blending, write mask) are left unspecialized, once per base, and makes every pipeline from its base by specialization, which takes a few microseconds instead of the 3–5 ms of a pipeline build. Metal 4 pipelines name no depth or stencil format, so one base serves every depth/stencil attachment. Breath of the Wild's 4,829 recorded pipeline keys came from 1,818 bases; 2,845 of the keys differed only in the blend factors of targets whose blending was off, which the key no longer holds (`pso_key_norm`).
+
+The bases are kept in a per-game pipeline archive in `pso_archive/` beside `pso_user.tsv`. Each file holds what one flush captured (`NNNNN.mtl4a`). A flush runs after the prewarm and 10 s after a burst of new bases. At start the host opens every file, and a base found in one is taken from it directly, in about 0.06 ms where building it takes 10–80 ms. Only bases no file holds are compiled, so each file holds new bases only. The serializer must capture binaries only: with descriptor capture as well, it writes no archive and reports no error. A flush and a compile must not overlap (a compile that finished during a flush crashed in Metal), so compiles hold a read lock and a flush the write lock (`g_arch_rw`).
+
+Every start adds a file or more: Breath of the Wild wrote 5–7 per start, and each file a base is not in costs a lookup about 0.06 ms. With more than 8 files (`PSO_ARCH_COMPACT`) the archive is compacted: the bases the prewarm takes from the old files are taken again through the compiler, with those files as its lookup archives, which captures them; the flush after the prewarm writes them into one file, and the old files are removed (`arch_compact_finish`). Bases the prewarm did not take (no `pso_user.tsv` line names them) go with the old files and are built again when drawn. The log says `pipeline archive compacted: N files gave M bases …`.
+
+The log shows `pipeline archive …: N files, … MB, opened in … ms` at start, `pipeline archive: N new pipeline bases written to …` after each flush, and after the prewarm a line counting the bases compiled, taken from the archive and reused. `DM_PSO_ARCHIVE=off` turns the archive off; `DM_PSO_ARCHIVE=<folder>` puts it elsewhere. `DM_PSO_MTL4=0` builds every pipeline through the `MTLDevice` as before, with no bases and no archive. The Metal 4 path is on by default on the Mac only. On iOS it stays off unless `DM_PSO_MTL4=1`: the archive's memory is not measured against an iPhone's limit yet, and an archive cannot be made offline for an iPhone, because `metal-tt` rejects the pipeline script the Metal 4 serializer writes. iOS is a later step. Pipelines whose functions have no Metal 4 descriptor (the diagnostic `DM_NVN_HILITE` and `DM_NVN_MAGSCAN` overrides) always take the `MTLDevice` path.
+
+During compaction, timed flushes defer while prewarm runs. Once it finishes, one archive-queue task flushes the recaptured bases and removes the old files. The pending count and serializer capture are protected by the same compile/flush lock, so a flush consumes the count for the bases it writes.
 
 ## Power
 
@@ -692,6 +742,23 @@ The game's own work and its frame rate stay as they are; the host avoids work of
 - **Host changes, all general:** the newest GPU code version the NVN layer reports now follows the SDK (1.16 from SDK 13): the engine refused its built-in shaders at 1.14 and `nnMain` returned at once ([03](agents/03-bringup.md)); `nvnWindowGetCrop` and `nvnSamplerBuilderGetLodClamp`.
 - **Input:** the 3D pad layout (the camera is on the right stick).
 - **Mac input:** the work folder's `run/ctl.sh` drives a run started with `DM_CTL` (`CTL=<file>` picks another run's control file), `run/step.sh <shot> <presses…>` presses and takes a screenshot, `run/snapseq.sh` boots and takes one every few seconds, and `run/route.sh <run>` boots on a fresh save and drives the route above: A at the title, A through the logo, A (Standard), A, B (closes the Naive Angel Mode help), A (Off), A (brightness), A (the auto-save notice), then Plus, Down, A skips the opening movie.
+**Bayonetta (`010076F0049A2000`)**
+- **Status:** plays on the iPhone (IPA 8.8 GB) from update 1.1 (`v65536`). On the Mac from a fresh save: the boot, the opening movie (USM; Plus skips it), the title and its attract demo, a new game (PLAY, NEW GAME, the auto-save notice, Normal), the prologue on the falling clock tower, the graveyard cutscene (skipped: Plus, Down, A, then Left, A for Yes), the touch-controls tips, the practice tutorial (punch, kick, combos, evade, Witch Time), the graveyard fight of Verse 1 with Witch Time, its autosave and the next loading screen's practice, with sound and no red line. 60 fps in play (frame time p50 16.65 ms, p95 17.1–17.5 ms; GPU 2–4 ms a frame on an M6), 30 in its cutscenes, where the game sets present interval 2; about 2.45 GB resident and 1.54 GB of Metal allocations, flat over 15 minutes.
+- **Engine:** PlatinumGames' own engine in its Wii U form, on NVN, SDK 3.6.0, as Bayonetta 2: the same `sdk` and `subsdk0` builds, and no host change. CRI middleware throughout: the file system (CPK), ADX2 sound (`se/` and `bgm/`, `.acf` / `.awb`) through one 6-channel `AudioOut`, and Sofdec movies (USM), all decoded by the game's own code. No virtual address memory: a 3.11 GB heap in the 4 GB layout, `mem_used` 102 MB.
+- **Files:** nine CRI CPK archives in the RomFS root (`data00.cpk` … `data03.cpk`, `data10.cpk` … `data14.cpk`, 4.25 GB) of PlatinumGames DAT archives, beside the movies and the sound; `cpk.py` reads them as they are.
+- **Shaders:** 458 BNSH files of one stage each (236 pixel, 222 vertex), the `.vso` / `.pso` members of `shader.dat` in `data00.cpk`; the split (`cpk_jobs`) takes about 1.7 minutes. All build.
+- **Input:** the 3D pad layout (the camera is on the right stick). The touch controls are handheld only; the profile keeps it docked.
+- **Mac input:** the work folder's `run/see.sh <run> [secs]` boots on a fresh save (or `SV=<save>`), presses `PRESS` once frame `AT` is logged and takes a shot every `EVERY` s; `run/ctl.sh`, `run/step.sh`, `run/watch.sh` and `run/fight.sh` as for Bayonetta 2; `run/tut.sh` works through the practice tutorial's pages (Minus is Next), and `run/witch.py` times the Witch Time page's countdown from shots and dodges at a sweep of offsets (the page wants a dodge right before the strike; it took 20–30 tries). `run/save_ref` is the save at the prologue's chapter screen, `run/save_ref2` the checkpoint after the tutorial (the tutorial comes back after a load), `run/save_ref3` the one after Verse 1.
+
+**Bayonetta 2 (`01007960049A0000`)**
+- **Status:** plays on the iPhone (IPA 12.5 GB) from update 1.2 (`v131072`). On the Mac: the boot, the PlatinumGames logo movie (USM), the title, a new game (slot 1, the auto-save notice, Story, Normal), the opening narration (The Legend of Aesir, which cannot be skipped on a first play), the prologue's cutscene (skipped: Plus, Down, A, A), the tutorial (closed: Plus, Down ×4, A), Verse 1 on the jet, Rodin's cutscene and the next fight with an Umbran Climax and a torture attack, with sound. 60 fps in play (frame time p50 16.67 ms, p95 17.5 ms; GPU 2–3.5 ms a frame on an M6), 30 in its cutscenes as the game asks; about 1.6 GB resident and 1.75 GB of Metal allocations. The title is up about 20 s after launch.
+- **Engine:** PlatinumGames' own engine in its Wii U form, on NVN, SDK 3.6.0: the oldest SDK so far, and no host change was needed for it (NVN API 53, as for the other SDKs up to 10). `subsdk0` is NVN's GLSLC; `main` imports `glslcCompile` but did not call it on the route above. Wwise sound through two 6-channel `AudioOut`s; CRI's file system and Sofdec movies (USM), both decoded by the game's own code. No virtual address memory: `nninitStartup` sets a 3.11 GB heap in the 4 GB layout, `mem_used` 102 MB for the rewritten modules.
+- **Files:** six CRI CPK archives (9.5 GB, 6,091 files, 12 GB of them CRILAYLA-compressed) of PlatinumGames DAT archives, beside the USM movies and the Wwise sound ([01](agents/01-extract.md); `dm/gfx/tools/cpk.py`).
+- **Shaders:** 1,856 BNSH files of one stage each (`.vso` / `.pso`) in `shader.dat`, `shader2.dat` and `shadereff.dat` of `data000.cpk`; the split decodes every CPK entry (`shader_split.py` `cpk_jobs`, about 2.5 minutes). All build ([04](agents/04-graphics.md)).
+- **Host changes, all general:** a cleared attachment larger than the render pass is cleared in a pass of its own (the narration in a corner of a black screen, speckled opening scenes), and `Downsample` of a single-sample texture is a filtered scaling copy (its bloom chain) ([04](agents/04-graphics.md)).
+- **Input:** the 3D pad layout (the camera is on the right stick). The game also offers touch controls in handheld mode; the profile keeps it docked.
+- **Mac input:** the work folder's `run/route.sh <run> [secs]` boots on a fresh save and presses A five times from the title (slot 1, the notice, Story, Normal), `run/ctl.sh` / `run/step.sh` press and take shots, `run/watch.sh` takes a series of shots, and `run/fight.sh` repeats a simple combo. `run/save_ref` holds the save after Verse 1, `run/save_ref2` the one after the second fight.
+
 **Advance Wars 1+2: Re-Boot Camp (`0100300012F2A000`)**
 - **Status:** plays on the iPhone (IPA 7.1 GB) from the base game 1.0.0, the only version. On the Mac: the boot, the Bink opening movie, the title, Nell's introduction, a new casual campaign and the first training battle (Field Training, Troop Orders); 60 fps in the menus, 30 fps in battle by the game's own limit (present interval 1, the frame's work 33 ms with the CPU and GPU mostly idle), sound, about 2.5 GB resident and 1.6–1.9 GB of Metal allocations, level over 15 minutes with no red line.
 - **Engine:** Unity 2020.2.1f3 IL2CPP on SDK 10.4.1 (The Great Ace Attorney Chronicles' `sdk` and movie module builds), NVN; FMOD sound through `AudioOut`; Bink 2 movies (`.bk2`) decoded by Bink's Unity plugin in `main`. The NPDM declares virtual address memory: `nninitStartup` hands pool − used to StandardAllocator and sets no heap, so the `sdk` build takes the node-area cut and the 1 GB alignment cut (`sdk_patches.py`), and the profile reports a 2 GB pool in Engage's 5 GB block: with the heap check's 1 GB the game's malloc ran dry at the first loading screen ([03](agents/03-bringup.md)).
