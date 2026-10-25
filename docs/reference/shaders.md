@@ -66,6 +66,13 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** such an output is read by its section headers (+0x4c section count, section *i*'s header at +0x90 + 0x90 *i*, type 0 = GPU code; `glslc_program`; the same headers SDK 4's outputs are read through, [GLSLC outputs read through their section headers](#glslc-outputs-read-through-their-section-headers)), and its stages are paired with each other, not as single-stage programs. The NSP script now stops at the split when it finds none.
 - **Found on:** Baba Is You (no profile).
 
+### GLSLC outputs in a zip archive, and those NROs compile at run time
+
+- **Symptom:** an NVN game's split finds none of its shipped shaders, and the ones it compiles at run time were not captured: the game's renderer is in NROs that call `glslcCompile`, and its whole RomFS is one zip.
+- **Cause:** Portal keeps all its files in `game.zip` (41,416 members, Deflate or stored). The Source engine's D3D9 layer (`materialsystem.nro`) links each vertex and pixel shader combination into one program; the programs of the game's precache list (`portal/glbaseshaders.cfg`, 219 entries) ship compiled as `nxcontent/nvsb/<hash>.nvsb` (`NVSB`, version 0x65, the file's length at +8, a 0x60-byte header, then one GLSLC output holding a vertex and a pixel shader). A deflated member hides the GLSLC magic from the loose-file scan. The game compiles the rest with `glslcCompile` (its movie shaders and its own blits: 10 outputs within 30 s of boot), and the capture rule looked only for `main` holding GLSL sources and importing `glslcCompile`.
+- **Fix:** `shader_split.py` reads zip archives member by member in parallel ranges (`zip_jobs` / `zip_shaders`; `zipfile`), each member scanned like a loose file, whole GLSLC outputs included. `profile_guess.py` `shader_sources` asks for the run-time GLSLC capture when an NRO the game loads imports `glslcCompile` and a subsdk defines it (`glslc_capture`). Portal's map: 242 keys from the `.nvsb` files and 13 from the capture, 229 vertex and pixel pairs.
+- **Found on:** [Portal](../../dm/games/01007BB017812000/README.md). No other profile's RomFS has a zip archive holding shaders.
+
 ### G2S containers in KTGL RDB archives
 
 - **How it is stored:** each material's shaders are a G2S container (`_S2G3000`, type KTID `0x7bcd279f`; 23,108 entries in `asset/system.rdb.bin*`, 2.3 GB inflated) of GLSLC outputs, as in 13 Sentinels' `main`, inside zlib-chunked IDRK entries ([01](../agents/01-extract.md)). One `_DOK0000` container (type `0x20a6a0bb`, the engine's system resources) holds 151 more bare GLSLC outputs, 21 of them drawn in the first battle.
@@ -127,6 +134,13 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - Each file is one variation with one stage, so the split pairs nothing; as in Hades II, the vertex shaders write every output their pixel shaders read and no pipeline failed to link.
 - **Found on:** [Bayonetta 2](../../dm/games/01007960049A0000/README.md): 1,856 distinct keys (1,547 pixel, 309 vertex) in `shader.dat`, `shader2.dat` and `shadereff.dat` of `data000.cpk` (the split about 2.5 minutes); [Bayonetta](../../dm/games/010076F0049A2000/README.md): 458 distinct keys (236 pixel, 222 vertex), the members of `shader.dat` in `data00.cpk` (about 1.7 minutes). All build for both.
 - **Not checked:** 13 Sentinels and Catherine: Full Body's CPKs (no files on the drives).
+
+### Needle shader containers in main and GFD archives
+
+- **Symptom:** the split finds no shaders, although `main` contains NVN control sections; it reports that no data record or code-address pair identifies their code areas.
+- **Cause:** Needle keeps independent shader programs in `HNSHV002` containers, embedded in `main` and in GFD's GSC files inside CRI CPK archives. These are neither GLSLC outputs nor BNSH files. A container can hold many variants separated by reflection metadata.
+- **Fix:** `shader_split.py` `needle_shaders` uses the container's big-endian whole length at +8, then the little-endian NVN section descriptors: 0x90 bytes immediately before each control section, with control offset, code offset, code length and control length at +0x30. Both regions must fit within that container, and the control/code headers and lengths must agree. Graphics stages come from SPH; headerless compute stages from the control's thread-group dimensions. Each program is paired with the single-stage cover, since its draw-time partner is not recorded by this wrapper. Synthetic fixtures check embedded variants, compute, length mismatches and container boundaries.
+- **Found on:** [Persona 5 Royal](../../dm/games/01005CA01580E000/README.md#shaders), with 0x850-byte control sections. The game note records counts and runtime coverage.
 
 ### Shaders in a zlib stream in main (YEBIS .tfxo)
 
@@ -542,6 +556,60 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Found on:** [Octopath Traveler 0](../../dm/games/01005270232F2000/README.md): 2,084 such shaders (Unreal's GPU particles); three ran in the first 100 seconds. [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md): in the 64 KB dummy buffer used before, its atomic max into a 480x270 r32ui 2D array (fragment shader `2bd5037003980716`, the scene after the story opening's first cutscene) ran about 1.4 MB past its end, writing into zero-copy pools over the game's heap and into unmapped addresses (GitHub issue #101).
 - **Note:** Metal shader validation (`MTL_SHADER_VALIDATION=1`) stops out-of-bounds accesses, so under it the scene played.
 
+### Bounded MSL 2.3 atomic emulation
+
+- **Symptom:** Metal shader validation reports invalid image-atomic stores even with an image-sized scratch buffer; without validation, GPU page faults can freeze rendering.
+- **Cause:** the translator lost the surface instruction's `IGN` bounds mode before lowering an image atomic to a raw buffer pointer. Scratch capacity cannot protect against invalid coordinates; the upstream 2D coordinate helper also omits array layers.
+- **Fix:** preserve the supported bounds mode, guard every coordinate before pointer construction, use layer-aware 64-bit addressing, and validate the matching image and buffer's layout and capacity before binding. The supported contract and tests are described below.
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#rendering), with the development-build report and remaining gameplay validation recorded there.
+
+Sizing the backing buffer does not make an out-of-range image coordinate safe.
+The offline translator now preserves the Maxwell surface instruction's bounds
+mode and explicitly discarded result. Its Metal-only lowering accepts `IGN`
+reductions and non-CAS atomics writing `RZ`; returning, predicate-returning,
+`TRAP`, and unknown modes fail translation rather than acquiring invented
+out-of-bounds semantics. This path supports non-indexed 32-bit buffer, 2D and
+2D-array images. Other translator callers do not enable it. Source 1D and
+1D-array instructions retain the existing one-row normalization to 2D `(x, 0)`
+and 2D-array `(x, 0, layer)`; buffer coordinates stay scalar, and buffer MSL is
+not rewritten by the 2D helper. Source 64-bit, floating-point and half2 atomics
+are rejected before descriptor-format resolution can erase their original size.
+Descriptor-sized 32-bit atomics also reject non-R32 integer descriptors before
+the legacy format fallback, both for bound images and constant-buffer-resolved
+bindless handles. An unresolved bindless atomic fails translation instead of
+being removed by bindless elimination. These checks apply only to the Metal
+atomic path; other translator backends retain their existing behavior.
+Indexed, 3D, multisample and other unsupported effective image shapes fail
+closed on this opt-in path; this is not a native-image-atomic implementation.
+
+The SPIR-V queries the bound image's dimensions and tests every original
+coordinate (including the layer) before forming the texel pointer or executing
+the atomic. Negative coordinates fail an unsigned comparison. Coordinates are
+not clamped, flattened for the bounds check, or changed in SPIR-V.
+`dmsh_atomic.py` recognizes the exact standalone SPIRV-Cross MSL 2.3 coordinate
+helper and replaces only that definition with typed, layer-aware helpers using
+64-bit address arithmetic; shader statements and call sites are untouched.
+An unrecognized helper or default alignment fails the build. This is a packed
+emulation layout, not proof that an arbitrary native pool's row pitch, layer
+stride or texture-view offset matches it. The host checks the matched IMG/IMGA
+[layout and capacity contract](../image-atomic-binding-contract.md) before
+binding; block-linear scratch still discards results and does not implement
+image read/write coherence.
+
+Changing this path invalidates the chain and shader cache. Rebuild the translator
+and record its actual fingerprints before preparing shaders again; a host-only
+rebuild is insufficient. The synthetic regression is
+`dm/tools/tests/test_image_atomic_bounds.py`: portable helper/algebra checks plus
+an opt-in rebuilt-translator → SPIR-V validation → MSL 2.3 check. Set
+`DMSH_TEST_XLATE` to the rebuilt translator, with `spirv-val` and `spirv-cross` on
+`PATH`; `DMSH_TEST_METAL=1` also compiles and links with Apple's Metal compiler.
+Set `DMSH_TEST_METAL_SDKS=macosx,iphoneos` to check both SDKs.
+The dimension fixture covers both instruction families for source 1D, buffer,
+1D array, 2D, 2D array and rejected 3D; accepted forms pass SPIR-V validation,
+Cross/helper lowering and the optional Metal checks. Shader acceptance does not
+imply admission of every native host layout. None of these tests executes a
+shader on a GPU.
+
 ## Shaders compiled at run time
 
 ### Built-in shaders compiled with the game's own GLSLC
@@ -563,6 +631,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Found on:** [Catherine: Full Body](../../dm/games/0100BF00112C0000/README.md) (SDK 8.2.1, Atlus's GFD engine, CRI middleware; one boot).
 
 ## Pipelines and caches
+
+### Pipeline keys omit unused colour state
+
+- **Symptom:** identical render pipelines compile repeatedly under different keys, lengthening startup prewarm and adding pipeline misses during play.
+- **Cause:** NVN blend and channel-mask state persists between draws, including state for colour targets absent from the current pass. `pso_desc` skips targets without a format and reads blend factors only when blending is enabled, but the old keys retained unused state. Deduplicating manifest lines alone also misses old rows whose unused state differs.
+- **Fix:** `pso_key_norm` in `nvn_pso_skey.h` clears blend factors when blending is disabled and, for normal passes, the blend-enable bit and write-mask nibble of every target without a format. Merged passes retain their logical blend-enable and mask state because `lmap` maps physical attachments to logical targets; a missing physical format does not imply the same logical target is unused. `pso_key_fill` normalizes live keys, `pso_skey_parse` normalizes historical prewarm rows, and `warm_worker` deduplicates the parsed keys across all input lists before compiling. Depth and stencil formats remain in the key because the `MTLDevice` path needs them, even though Metal 4 bases omit them.
+- **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md#files-and-shaders) (disabled blend factors), [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md#files-and-shaders) (absent-target state, reported by MacNativeGames).
+- **Check:** `t_pso_skey` covers normalized round trips, historical rows differing only in unused state, and preservation of merged-pass logical masks and blend bits; `t_pso_archive` checks disabled blend factors with all targets present. `make -C dm/gfx/tests GAME=<id> check_t_pso_warm` loads two synthetic manifests through `warm_worker`, checks compilation counts and draw-time cache hits, and compares GPU pixels with the original descriptors through both MTLDevice and Metal 4. It includes a merged pass whose physical attachment 0 uses logical target 7's blend and mask state.
 
 ### Shader cache key covering the pairs
 

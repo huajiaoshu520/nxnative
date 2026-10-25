@@ -588,6 +588,20 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Fix:** they are never loaded (`profile_guess.py` `GPU_DRIVERS`); the EGL imports stay unbound stubs that nothing calls.
 - **Found on:** [Absolum](../../dm/games/0100A83022A22000/README.md) (FNA3D).
 
+### Modules only the NROs import from
+
+- **Symptom:** `UNIMPL _ZN5movie12SetAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_`, `UNIMPL glslcInitialize`, then `UNIMPL _ZN5movie9ExtractorC1ENS_13ContainerTypeE` and a crash reading address 0x18 in an NRO (`pc=nro18+0x97f4`) as the first movie starts.
+- **Cause:** the provisional profile loads a subsdk only when `main` imports something from it that the host does not supply. The survey extracts only the code modules, so the NROs in the RomFS were not looked at. Portal's `main` is a launcher with SDL; its Source engine NROs play the movies through NintendoSDK_movie (`subsdk2`, imported by `video_nx.nro`) and initialize and call GLSLC (`subsdk0`, imported by `materialsystem.nro` and `video_nx.nro`). Left out, their imports were bound to stubs, and the stub constructor of `movie::Extractor` left the object empty.
+- **Fix:** once the rewrite stage has collected the NROs, the NSP script adds to a provisional profile every subsdk whose exports an NRO imports and that no loaded module, other NRO or host hook supplies (`profile_guess.py` `nro_modules`, written under a section `After the NRO collection`). NVIDIA's GPU drivers stay out, as above.
+- **Found on:** [Portal](../../dm/games/01007BB017812000/README.md) (`modules main subsdk0 subsdk2 sdk`; `subsdk1`, NVIDIA's OpenGL driver, stays out).
+
+### `ro::LookupModuleSymbol` for a name the module does not define
+
+- **Symptom:** `[RED] ro::LookupModuleSymbol BuiltDebug: not defined in that module` once at boot; nothing goes wrong after it.
+- **Cause:** the Source engine asks each module it loads for `BuiltDebug`, which only its debug builds define. `ldr:ro` fails such a lookup on Horizon too, and the game takes the failure as "release build".
+- **Fix:** the host's answer was already Horizon's (a failure result). The line is no longer red when the module is a loaded one; a lookup in a module the host does not know stays red (`hle_ro.c`).
+- **Found on:** [Portal](../../dm/games/01007BB017812000/README.md).
+
 ### IL2CPP common string table intact
 
 - Not needed in the end: the tolerant common string table of pull request #15. [Ace Attorney Investigations Collection](../../dm/games/010005501E68C000/README.md) 1.0.0.2's `main` has the table intact at `main+0x46169ac`, 109 entries ending at `Hash128`.

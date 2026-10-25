@@ -206,8 +206,8 @@ int main(void) { @autoreleasepool {
     concurrent_bases(1);
     // key normalization
     pso_key k; memset(&k, 0, sizeof k); k.blend_en = 0x5; k.dfmt = MTLPixelFormatDepth32Float; k.sfmt = MTLPixelFormatStencil8;
-    for (int i = 0; i < 8; i++) { k.blend[i].src_rgb = 5; k.blend[i].dst_rgb = 6; }
-    pso_key_norm(&k);
+    for (int i = 0; i < 8; i++) { k.cfmt[i] = MTLPixelFormatRGBA8Unorm; k.blend[i].src_rgb = 5; k.blend[i].dst_rgb = 6; }   // every target present: only the blend rule acts
+    pso_key_norm(&k, 0);
     EXPECT("blend of an enabled target kept", 5, k.blend[0].src_rgb);
     EXPECT("blend of an enabled target kept (2)", 6, k.blend[2].dst_rgb);
     EXPECT("blend of a disabled target dropped", 0, k.blend[1].src_rgb);

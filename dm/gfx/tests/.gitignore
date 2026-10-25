@@ -1,3 +1,7 @@
+t_imga_layout
+t_imga_layout_sanitize
+t_imga_layout.dSYM/
+t_imga_layout_sanitize.dSYM/
 t_nvn
 t_nvn.dSYM/
 t_builtin
@@ -16,6 +20,8 @@ t_fuse_check
 t_fuse_check.dSYM/
 t_present_crop
 t_present_crop.dSYM/
+t_present_rescue
+t_present_rescue.dSYM/
 t_reorder_chain
 t_reorder_chain.dSYM/
 t_mip_extent
@@ -54,6 +60,8 @@ t_tbuf2d
 t_tbuf2d.dSYM/
 t_view_levels
 t_view_levels.dSYM/
+t_upload_budget
+t_upload_budget.dSYM/
 t_view_swizzle
 t_view_swizzle.dSYM/
 t_vk_desc
@@ -70,9 +78,13 @@ t_primitive_restart
 t_primitive_restart.dSYM/
 t_clear_ds
 t_clear_ds.dSYM/
+t_clear_tex
+t_clear_tex.dSYM/
 t_upgrade_alias
 t_upgrade_alias.dSYM/
 t_stencil_view
 t_stencil_view.dSYM/
 t_pso_archive
 t_pso_archive.dSYM/
+t_pso_warm
+t_pso_warm.dSYM/

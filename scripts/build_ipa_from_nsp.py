@@ -848,11 +848,13 @@ def build_mismatch(d, name, g):   # the modules of an extraction whose build ID 
     return [f'{m} {build_id(d / "ExeFS" / m)} (registered {bid})' for m, bid in want.items() if m != 'display' and build_id(d / 'ExeFS' / m) != bid]
 
 
-def patch_files(repo, exe_dir, mods):
+def patch_files(repo, exe_dir, mods, game_id=None):
     """The patch files that name one of the modules' builds (dm/tools/sdk_patches.py, dm/games/*/patches.py): patch_nso.py loads them all but applies only those of a module's
-    build ID, so another game's patches do not change this game's rewrite"""
+    build ID. The selected game's file also counts for unknown builds: it may supply MATCH_CUTS. Another game's rules do not change this game's rewrite."""
     ids = {build_id(exe_dir / m) for m in mods}
-    return [p for p in [repo / 'dm/tools/sdk_patches.py'] + sorted((repo / 'dm/games').glob('*/patches.py')) if any(i in p.read_text(errors='replace') for i in ids)]
+    selected = Path(game_id).name if game_id else None
+    return [p for p in [repo / 'dm/tools/sdk_patches.py'] + sorted((repo / 'dm/games').glob('*/patches.py'))
+            if p.parent.name == selected or any(i in p.read_text(errors='replace') for i in ids)]
 
 
 def collect_nros(py, repo, romfs, dst, env, logs):
@@ -874,23 +876,36 @@ def collect_nros(py, repo, romfs, dst, env, logs):
     return {l.split('\t')[0]: dst / (l.split('\t')[0] + '.nro') for l in (dst / 'nro.tsv').read_text().splitlines() if l and not l.startswith('#') and not l.startswith('refused\t')}
 
 
-def rewrite(py, repo, exe_dir, out, env, logs, g):
+def nro_modules(g, exe_dir, nros):
+    """modules of a provisional profile once the NROs are collected: the subsdks the NROs import from, which the survey could not see (dm/games/profile_guess.py nro_modules; Portal's movie
+    module and GLSLC). Returns the profile, reloaded when it changed"""
+    add = pg.nro_modules(exe_dir, nros, g.words('modules'))
+    if not add: return g
+    mods = sorted(set(g.words('modules')) | set(add), key=pg.load_order)
+    why = ', '.join(f'{m} ({k})' for m, k in add.items())
+    say(f'modules {" ".join(mods)}: the NROs the game loads import from {why}')
+    return set_keys(g, {'modules': (' '.join(mods), f'the NROs the game loads at run time import from {why}, which main does not')}, 'After the NRO collection')
+
+
+def rewrite(py, repo, exe_dir, out, env, logs, g, provisional=False):
     """patch_nso.py on every code module (each writes its own <module>.* files, all the same build_src.sha256 line), each with its log, as many at once as the Mac has cores.
-    The modules are the profile's and the NROs the game registers (collect_nros; nro.tsv beside them lists those). Reused when the modules, patch_nso.py (with nso_code.py, nso_asm.py
-    and the patch files of their builds), its switch and capstone are as at the last successful rewrite (Monster Hunter Rise's main alone takes 5.5 min)"""
+    The modules are the profile's and the NROs the game registers (collect_nros; nro.tsv beside them lists those); a provisional profile first gets the subsdks those NROs import from (nro_modules).
+    Reused when the modules, patch_nso.py (with nso_code.py, nso_asm.py and the selected profile's function rules / the patch files of their builds), its switches and capstone are as at the
+    last successful rewrite (Monster Hunter Rise's main alone takes 5.5 min). Returns the profile"""
     import capstone
-    mods = g.words('modules')
     PROG.stage('rewrite', step='checking the inputs')
     nro_dir = out.with_name('nro_' + out.name.removeprefix('patched_'))
     nros = collect_nros(py, repo, exe_dir.parent / 'RomFS', nro_dir, env, logs)
+    if provisional and nros: g = nro_modules(g, exe_dir, nros)
+    mods = g.words('modules')
     manifest = nro_dir / 'nro.tsv'
     src = {m: exe_dir / m for m in mods} | nros
     names = list(src)
     kf = out.with_name(out.name + '.key')
-    key = fingerprint(('files', [repo / 'dm/tools' / f for f in ('patch_nso.py', 'nso_code.py', 'nso_asm.py')] + patch_files(repo, exe_dir, mods) + list(src.values()) + ([manifest] if manifest.is_file() else [])), names, capstone.__version__,
-                      {k: env.get(k) for k in ('DM_PATCH_FRONT',)})
+    key = fingerprint(('files', [repo / 'dm/tools' / f for f in ('patch_nso.py', 'nso_code.py', 'nso_asm.py', 'nso_match.py')] + patch_files(repo, exe_dir, mods, env.get('DM_GAME')) + list(src.values()) + ([manifest] if manifest.is_file() else [])), names, capstone.__version__,
+                      {k: env.get(k) for k in ('DM_PATCH_FRONT', 'DM_GAME')})
     if all((out / f'{m}.patched.bin').is_file() for m in names) and reused(kf, key) is not None:
-        PROG.end(f'{", ".join(mods)}{f" and {len(nros)} NROs" if nros else ""}, reused (inputs unchanged)'); return
+        PROG.end(f'{", ".join(mods)}{f" and {len(nros)} NROs" if nros else ""}, reused (inputs unchanged)'); return g
     tmp = out.with_name(out.name + '.partial'); rmtree(tmp); tmp.mkdir(parents=True); logs.mkdir(parents=True, exist_ok=True)
     if manifest.is_file(): shutil.copyfile(manifest, tmp / 'nro.tsv')   # refused-only manifests preserve the game's offline registration path too
     PROG.set(step=', '.join(mods) + (f' and {len(nros)} NROs' if nros else ''), done=0, total=len(names), unit='modules')
@@ -914,6 +929,7 @@ def rewrite(py, repo, exe_dir, out, env, logs, g):
         for f in logf.values(): f.close()
     rmtree(kf); swap_in(tmp, out); kf.write_text(f'{key}\n')
     PROG.end(', '.join(mods) + (f' and {len(nros)} NROs' if nros else ''))
+    return g
 
 
 GLSLC_SECS = 30   # the longest capture run: Three Houses compiles its 9 shaders within 1.2 s of boot, and the run stops as soon as every file the profile names is there
@@ -1592,7 +1608,7 @@ def parse_args(argv):
 def report_profile_status(g, reg, pkg_ver, derived, provisional, artifact='IPA'):
     """Keep build-specific warnings visible for the IPA, the Xcode project and a Mac-only build"""
     disp = g.builds()[pkg_ver]['display'] if derived else ''
-    if derived:   # the modules whose build no registered version has: the rewriter's cuts and the host's fixes made for a registered build's code do not reach them
+    if derived:   # unknown builds do not inherit fixed addresses; opt-in function matches are reported by the rewriter
         known = {(m, b) for row in reg.builds().values() for m, b in row.items() if m != 'display'}
         other = [m for m, b in g.builds()[pkg_ver].items() if m != 'display' and (m, b) not in known]
         registered_builds = ", ".join(f'{v} {b["display"]}' for v, b in reg.builds().items())
@@ -1600,7 +1616,7 @@ def report_profile_status(g, reg, pkg_ver, derived, provisional, artifact='IPA')
             say(f'this {artifact} is game profile {reg.id}\'s {pkg_ver} ({disp}) under title ID {g.title_id:016X}: its settings and every fix for its builds, with shaders split from this title\'s own files')
         else: say(f'[RED] this {artifact} uses {pkg_ver} ({disp}), which game profile {reg.id} was not brought up on ({registered_builds}): '
             'its settings, with this version\'s own shaders' + (f'; {", ".join(other)} {"is a build" if len(other) == 1 else "are builds"} the profile does not register, so the fixes made for '
-            'the registered builds\' code (patch_nso.py, the host) do not apply there and the game may not run as well' if other else '; every module is a registered build'))
+            'the registered builds\' fixed addresses do not apply there; opt-in function patches apply only on a verified code match (see rewrite logs), and the game may not run as well' if other else '; every module is a registered build'))
     if provisional:
         say(f'[RED] this {artifact} was built from a provisional game profile and the game may not boot: {g.dir}')
         say(f'  bring-up on the Mac: DM_GAMES_DIR="{g.dir.parent}" make -C dm/host GAME={g.id} dmhost, see docs/agents')
@@ -1768,7 +1784,7 @@ def main(args=None):
         + (f'; the game\'s languages: {" ".join(have)}' if have else '; the control data lists no languages (not checked)') + (' (DM_LANG=<code> in the run command changes it)' if mac else ' (DM_LANG=<code> in the app\'s Documents/env.txt changes it)'))
 
     patched = work / f'patched_{pkg_ver}'
-    rewrite(py, repo, game / 'ExeFS', patched, env, logs, g)
+    g = rewrite(py, repo, game / 'ExeFS', patched, env, logs, g, provisional)
     chain_header(py, repo, env, logs)   # before any host is built
     if provisional or derived:   # the keys that need the rewritten modules, then (provisional) the heap check (both only change keys the host is built with, not the rewrite or the shader steps)
         provisional_prep(py, repo, env, logs, g)

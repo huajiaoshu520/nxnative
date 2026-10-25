@@ -181,6 +181,13 @@ Games read this count as a position in their own command memory and size their h
 - **Check:** `DM_NVN_TEXCPU=1` lists non-packaged textures in CPU-visible pools.
 - **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md): its glyph cache (the text texture) and its four 64×1 RGBA16F sky colour ramps.
 
+### Linear render-target storage without the LINEAR flag
+
+- **Symptom:** a trap during graphics initialization in `SetupSurfaceInfoMemoryInside`, asserting `ctx.memorySize <= localmemsetupinfo.memorySize`.
+- **Cause:** `LINEAR_RENDER_TARGET` specifies linear storage independently of `LINEAR`. The Metal backing path recognized either flag, but the storage-size and deswizzle helpers tested only `LINEAR`, underallocating some render targets and treating their rows as block-linear.
+- **Fix:** `nvn_tex.c` recognizes either flag for linear sizing and excludes both from block-linear level offsets, GOB columns and sparse layout. `nvn_deswizzle_geom` rejects both. `tex_linear` uses the same calculated row pitch, including implicit alignment, as `GetStorageSize`. Render-target rows align to 128 bytes; ordinary linear rows align to 32. Explicit strides are preserved. `t_tex` covers the layout and `t_linear_readback` checks a GPU clear against padded CPU-visible rows.
+- **Found on:** [Persona 5 Royal](../../dm/games/01005CA01580E000/README.md#rendering): a 16x16 RGBA8 target with flags `0x44` and stride 128 needs 2 KB; block-linear sizing returned 1 KB.
+
 ### Textures written with `nvnTextureWriteTexels`
 
 - **Symptom:** video frames, or a game's built-in default textures, are all zero.
@@ -275,6 +282,14 @@ Games read this count as a position in their own command memory and size their h
 - **Fix:** the thread pause for the GC, and the tracker race fixed; `tests/t_dirty_race.c` reproduces the race.
 - **Found on:** [Fire Emblem Engage](../../dm/games/0100A6301214E000/README.md): probably fixed; since the pause, 12 runs (eight of them 200 s runs through the movie and title, four of 330 to 850 s) have not stalled once, where one in four used to.
 - **Note:** if a stall comes back, sample the process when its log stops growing (`sample <pid> 3`) to see where every thread waits. The crash handler writes one line with `write()` and exits if the stderr lock stays taken for 1 s, so a stall that holds that lock shows up as such.
+
+### Dirty-page writes missed during upload
+
+- **Symptom:** a CPU-written texture stays stale after later writes; letters can be missing from a glyph cache.
+- **Cause:** a protect skipped a page another thread was unprotecting, leaving it writable with a generation already covered by the upload stamp. Taking the stamp after protecting, or setting the cached last-check generation after the upload, could also cover a fault whose bytes arrived after the read. Separately, an unprotect advanced the global clock before publishing the page generation: a checker could cache a clean result in between and never scan again once the page became writable. Both the page-fault path and batched host pre-write path had that publication window.
+- **Fix:** take the stamp before protecting and reading, and start the last-check generation at that stamp. Finish any pending protection run before waiting for a BUSY page, then retry that page. Both unprotect paths use `stamp_page` to publish the page generation and advance the global clock once more afterward, invalidating checks that ran before publication. These are general tracker and cache rules, with no game-specific gate.
+- **Found on:** [Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md), reported in MacNativeGames commit `a166602` and ported through [PR #197](https://github.com/seedds/nxnative/pull/197). The missing-letter symptom has not been reproduced in nxnative; the tracker failures are reproduced locally by the regression tests.
+- **Check:** `t_dirty_race` covers the BUSY-page retry, stamp ordering, and a check between clock allocation and generation publication in both unprotect paths. The publication cases fail on main; the batched case also fails with the original PR applied.
 
 ## NVN entry points
 

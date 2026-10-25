@@ -247,6 +247,96 @@ int main(void) {
         EXPECT("the bind reads the handle patched at its start + 0x10: slot 3, texture 1235, sampler 511", 1, rh.op == OP_BIND_TEX1 && bh->n == 1 && bh->first == 3 && bh->stage == NVN_SHADER_STAGE_FRAGMENT && bh->h[0] == patched);
         P(nvnCommandBufferFinalize)(&c2); P(nvnMemoryPoolFinalize)(&mp);
     }
+    // Uniform bindings are measured into resource budgets too. A bounded binding needs
+    // 8 header bytes plus 16 payload bytes; keep the full record for larger ranges.
+    {
+        static uint8_t m[4096] __attribute__((aligned(4096))); NVNmemoryPoolBuilder mb; NVNmemoryPool mp; NVNcommandBuffer c2;
+        P(nvnMemoryPoolBuilderSetDefaults)(&mb); P(nvnMemoryPoolBuilderSetStorage)(&mb, m, sizeof m); P(nvnMemoryPoolInitialize)(&mp, &mb);
+        P(nvnCommandBufferInitialize)(&c2, &dev);
+        P(nvnCommandBufferAddCommandMemory)(&c2, &mp, 0, sizeof m); P(nvnCommandBufferBeginRecording)(&c2);
+        P(nvnCommandBufferBindUniformBuffer)(&c2, NVN_SHADER_STAGE_FRAGMENT, 13, UINT64_C(0x123456789abc0000), 65536);
+        NVNcommandHandle first = P(nvnCommandBufferEndRecording)(&c2);
+        size_t first_size = P(nvnCommandBufferGetCommandMemoryUsed)(&c2);
+        EXPECT("maximum uniform range: 24-byte bind + END", 32, first_size);
+        op_hdr rh; memcpy(&rh, m, sizeof rh);
+        EXPECT("bounded uniform record is 24 bytes", 24, rh.size);
+        p_bind_buf decoded; const p_bind_buf *b = bind_buf_rec(rh.op, m + 8, &decoded);
+        EXPECT("bounded uniform decode keeps stage, index, address, size", 1,
+               b->stage == NVN_SHADER_STAGE_FRAGMENT && b->index == 13 && b->addr == UINT64_C(0x123456789abc0000) && b->size == 65536);
+        op_hdr end; memcpy(&end, m + rh.size, sizeof end);
+        EXPECT("uniform bind preserves its adjacent END", 1, end.op == OP_END && end.size == 8 && (const uint8_t *)first == m);
+        uint8_t saved[64]; memcpy(saved, m, first_size);
+        P(nvnCommandBufferAddCommandMemory)(&c2, &mp, (ptrdiff_t)first_size, sizeof m - first_size); P(nvnCommandBufferBeginRecording)(&c2);
+        NVNbufferRange ranges[] = {{UINT64_C(0xfedcba9876540000), 256}, {UINT64_C(0x1122334455660000), 0}};
+        P(nvnCommandBufferBindUniformBuffers)(&c2, NVN_SHADER_STAGE_VERTEX, 2, 2, ranges);
+        P(nvnCommandBufferEndRecording)(&c2);
+        memset(ranges, 0, sizeof ranges);
+        EXPECT("plural uniform binds: 2 x 24 + END", 56, P(nvnCommandBufferGetCommandMemoryUsed)(&c2));
+        EXPECT("independent uniform recording preserves predecessor", 0, memcmp(saved, m, first_size));
+        size_t pos = first_size;
+        memcpy(&rh, m + pos, sizeof rh); b = bind_buf_rec(rh.op, m + pos + 8, &decoded);
+        EXPECT("plural first uniform keeps copied range and slot", 1,
+               b->stage == NVN_SHADER_STAGE_VERTEX && b->index == 2 && b->addr == UINT64_C(0xfedcba9876540000) && b->size == 256);
+        pos += rh.size;
+        memcpy(&rh, m + pos, sizeof rh); b = bind_buf_rec(rh.op, m + pos + 8, &decoded);
+        EXPECT("plural second uniform preserves zero range and next slot", 1,
+               b->stage == NVN_SHADER_STAGE_VERTEX && b->index == 3 && b->addr == UINT64_C(0x1122334455660000) && b->size == 0);
+        memcpy(&end, m + pos + rh.size, sizeof end);
+        EXPECT("plural uniform binds preserve their END", 1, end.op == OP_END && end.size == 8);
+        P(nvnCommandBufferAddCommandMemory)(&c2, &mp, 512, sizeof m - 512); P(nvnCommandBufferBeginRecording)(&c2);
+        P(nvnCommandBufferBindUniformBuffer)(&c2, NVN_SHADER_STAGE_COMPUTE, 3, UINT64_C(0xffff123456780000), UINT64_C(0x100000001));
+        P(nvnCommandBufferEndRecording)(&c2);
+        memcpy(&rh, m + 512, sizeof rh);
+        EXPECT("wide uniform range keeps full record + END", 40, P(nvnCommandBufferGetCommandMemoryUsed)(&c2));
+        EXPECT("wide uniform range keeps full opcode and size", 1, rh.op == OP_BIND_UBO && rh.size == 32);
+        b = bind_buf_rec(rh.op, m + 520, &decoded);
+        EXPECT("wide uniform decode preserves all 64 bits", 1,
+               b->stage == NVN_SHADER_STAGE_COMPUTE && b->index == 3 && b->addr == UINT64_C(0xffff123456780000) && b->size == UINT64_C(0x100000001));
+        P(nvnCommandBufferFinalize)(&c2); P(nvnMemoryPoolFinalize)(&mp);
+    }
+    // One vertex range needs 8 header bytes plus 16 payload bytes; arrays and
+    // ranges wider than 32 bits retain the general representation.
+    {
+        static uint8_t m[4096] __attribute__((aligned(4096))); NVNmemoryPoolBuilder mb; NVNmemoryPool mp; NVNcommandBuffer c2;
+        P(nvnMemoryPoolBuilderSetDefaults)(&mb); P(nvnMemoryPoolBuilderSetStorage)(&mb, m, sizeof m); P(nvnMemoryPoolInitialize)(&mp, &mb);
+        P(nvnCommandBufferInitialize)(&c2, &dev);
+        P(nvnCommandBufferAddCommandMemory)(&c2, &mp, 0, sizeof m); P(nvnCommandBufferBeginRecording)(&c2);
+        P(nvnCommandBufferBindVertexBuffer)(&c2, 15, UINT64_C(0xfedcba9876540000), UINT32_MAX);
+        P(nvnCommandBufferEndRecording)(&c2);
+        EXPECT("single vertex buffer: 24-byte bind + END", 32, P(nvnCommandBufferGetCommandMemoryUsed)(&c2));
+        op_hdr rh, end; memcpy(&rh, m, sizeof rh); memcpy(&end, m + rh.size, sizeof end);
+        EXPECT("single vertex binding record is 24 bytes", 24, rh.size);
+        EXPECT("single vertex binding preserves adjacent END", 1, end.op == OP_END && end.size == 8);
+        p_bind_vbuf tmp; const p_bind_vbuf *b = vbuf_rec(rh.op, m + 8, &tmp);
+        EXPECT("single vertex decode preserves slot, full address, maximum size", 1,
+               b->first == 15 && b->n == 1 && b->r[0].address == UINT64_C(0xfedcba9876540000) && b->r[0].size == UINT32_MAX);
+        NVNbufferRange ranges[] = {{UINT64_C(0x1122334455660000), 0}, {UINT64_C(0x9988776655440000), 256}};
+        P(nvnCommandBufferAddCommandMemory)(&c2, &mp, 128, sizeof m - 128); P(nvnCommandBufferBeginRecording)(&c2);
+        P(nvnCommandBufferBindVertexBuffers)(&c2, 3, 1, ranges); P(nvnCommandBufferEndRecording)(&c2);
+        EXPECT("one-element vertex array: 24-byte bind + END", 32, P(nvnCommandBufferGetCommandMemoryUsed)(&c2));
+        memcpy(&rh, m + 128, sizeof rh); b = vbuf_rec(rh.op, m + 136, &tmp);
+        EXPECT("one-element vertex array decode preserves zero range", 1,
+               b->first == 3 && b->n == 1 && b->r[0].address == UINT64_C(0x1122334455660000) && b->r[0].size == 0);
+        P(nvnCommandBufferAddCommandMemory)(&c2, &mp, 256, sizeof m - 256); P(nvnCommandBufferBeginRecording)(&c2);
+        P(nvnCommandBufferBindVertexBuffers)(&c2, 4, 2, ranges); P(nvnCommandBufferEndRecording)(&c2);
+        memset(ranges, 0, sizeof ranges);
+        EXPECT("two vertex ranges retain array record + END", 56, P(nvnCommandBufferGetCommandMemoryUsed)(&c2));
+        memcpy(&rh, m + 256, sizeof rh);
+        EXPECT("two vertex ranges retain array opcode", OP_BIND_VBUF, rh.op);
+        b = vbuf_rec(rh.op, m + 264, &tmp);
+        EXPECT("vertex array decode preserves both copied ranges", 1,
+               b->first == 4 && b->n == 2 && b->r[0].address == UINT64_C(0x1122334455660000) && !b->r[0].size &&
+               b->r[1].address == UINT64_C(0x9988776655440000) && b->r[1].size == 256);
+        P(nvnCommandBufferAddCommandMemory)(&c2, &mp, 384, sizeof m - 384); P(nvnCommandBufferBeginRecording)(&c2);
+        P(nvnCommandBufferBindVertexBuffer)(&c2, 7, UINT64_C(0xabcd123456780000), UINT64_C(0x100000001)); P(nvnCommandBufferEndRecording)(&c2);
+        EXPECT("wide vertex range retains full record + END", 40, P(nvnCommandBufferGetCommandMemoryUsed)(&c2));
+        memcpy(&rh, m + 384, sizeof rh);
+        EXPECT("wide vertex range retains array opcode", OP_BIND_VBUF, rh.op);
+        b = vbuf_rec(rh.op, m + 392, &tmp);
+        EXPECT("wide vertex range decode preserves all 64 bits", 1,
+               b->first == 7 && b->n == 1 && b->r[0].address == UINT64_C(0xabcd123456780000) && b->r[0].size == UINT64_C(0x100000001));
+        P(nvnCommandBufferFinalize)(&c2); P(nvnMemoryPoolFinalize)(&mp);
+    }
     // 5b'. Fixed slots sized by GetCommandMemoryUsed, as Tears of the Kingdom gives each model's prerecorded lists (GitHub issue #61): a list measured at S bytes is recorded
     //      into slot k = base + S × k with AddCommandMemory(max(S, 512)), and slot k + 1 is recorded right after it. The list here is an uniform update of n bytes and a
     //      uniform buffer bind (the last record before the END in the crash), the next slot's starts with a CALL. Walking slot 0 afterwards must reach its own END through
@@ -275,7 +365,13 @@ int main(void) {
                 if (h.op == OP_JUMP) { const uint8_t *t; memcpy(&t, p + 8, 8); int in = t >= m && t < m + sizeof m;
                     for (int i = 0; i < g_nhostseg; i++) in |= t >= g_hostseg[i].mem && t < g_hostseg[i].mem + g_hostseg[i].n;
                     if (!in) { ok = 0; break; } jumped = 1; p = t; continue; }
-                if (k < 4) ops[k] = (int)h.op; k++;
+                uint32_t op = h.op;
+                if (op == OP_BIND_UBO || op == OP_BIND_UBO_SMALL) {
+                    p_bind_buf tmp; const p_bind_buf *b = bind_buf_rec(op, p + 8, &tmp);
+                    ok &= b->stage == NVN_SHADER_STAGE_FRAGMENT && b->index == 4 && b->addr == 0x20000 && b->size == 0x100;
+                    op = OP_BIND_UBO;
+                }
+                if (k < 4) ops[k] = (int)op; k++;
                 if (h.op == OP_END) break;
                 p += h.size;
             }
@@ -285,7 +381,7 @@ int main(void) {
         }
         printf("(first broken slot size %d)\n", first_bad);
         EXPECT("slotted lists replay whole after the next slot is recorded", 0, broken);
-        EXPECT("lists of 64..504 bytes stay in their 512 (no host segment)", (504 - 64) / 8 + 1, jumps_fit);
+        EXPECT("lists of 56..504 bytes stay in their 512 (no host segment)", (504 - 56) / 8 + 1, jumps_fit);
         P(nvnCommandBufferFinalize)(&c3); P(nvnMemoryPoolFinalize)(&mp);
     }
     // 5b''. Host segment sizes (hostseg_size), as Super Mario Odyssey grants 512 bytes from an empty pool before recording: such a grant gets a HOSTSEG_SMALL segment; a recording

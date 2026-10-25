@@ -68,7 +68,7 @@ static void samples_xy(int s, uint32_t *sx, uint32_t *sy) {
 // its 1024×1024 ASTC 6×6 textures (48 GOBs wide instead of 43, level 1 at 0x90000 instead of 0x81000) read 2,183 all-zero blocks in level 0 and 3,043 in level 1, which ASTC
 // decodes as its error colour (magenta clothes)
 enum { SPARSE_TILE = 0x10000 };
-static int sparse_of(const nvn_texdesc *d) { return (d->flags & 0x20) && !(d->flags & 0x10) && d->target != 10; }
+static int sparse_of(const nvn_texdesc *d) { return (d->flags & 0x20) && !(d->flags & 0x50) && d->target != 10; }
 // Offset of level `level` from the start of its layer, and the GOB columns it is laid out with (*gobs, may be NULL)
 static uint64_t level_walk(const nvn_texdesc *d, unsigned level, unsigned dpl, uint32_t w, uint32_t h, uint32_t z,
                            unsigned tileH, unsigned tileD, fmt_t t, uint32_t *gobs) {
@@ -105,7 +105,10 @@ void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o) {
         o->layer_size = o->size = (uint64_t)t.bpb * d->width;
         o->align = t.bpb == 12 ? 4 : t.bpb; return;
     }
-    if (d->flags & 0x10) {                                            // LINEAR: row pitch = stride or aligned to 32
+    // LINEAR_RENDER_TARGET (0x40) is linear by itself. Persona 5 Royal creates
+    // a 16x16 RGBA8 target with flags 0x44 and stride 128; block-linear sizing
+    // returned 1024 instead of 2048 bytes and tripped its surface-memory assertion.
+    if (d->flags & 0x50) {                                            // LINEAR or LINEAR_RENDER_TARGET
         o->align = (d->flags & 0x40) ? 128 : 32;
         uint32_t stride = d->stride ? d->stride : (t.bpb * blk(w, t.bw) + o->align - 1) & ~(o->align - 1);
         o->layer_size = o->size = (uint64_t)stride * blk(h, t.bh);
@@ -134,7 +137,7 @@ uint64_t nvn_tex_level_offset(const nvn_texdesc *d, unsigned level) {
     fmt_t t = fmt_of(d->format);
     unsigned dpl; int layered; uint32_t w, h, z;
     shape(d, &dpl, &layered, &w, &h, &z);
-    if (!t.bpb || (d->flags & 0x10) || d->target == 10) return 0;
+    if (!t.bpb || (d->flags & 0x50) || d->target == 10) return 0;
     nvn_texlayout L; nvn_tex_layout(d, &L);
     return level_offset(d, level, dpl, w, h, z, L.tileH, L.tileD, t);
 }
@@ -143,7 +146,7 @@ uint32_t nvn_tex_level_gobs(const nvn_texdesc *d, unsigned level) {
     fmt_t t = fmt_of(d->format);
     unsigned dpl; int layered; uint32_t w, h, z, g = 0;
     shape(d, &dpl, &layered, &w, &h, &z);
-    if (!t.bpb || (d->flags & 0x10) || d->target == 10) return 0;
+    if (!t.bpb || (d->flags & 0x50) || d->target == 10) return 0;
     nvn_texlayout L; nvn_tex_layout(d, &L);
     level_walk(d, level, dpl, w, h, z, L.tileH, L.tileD, t, &g);
     return g;

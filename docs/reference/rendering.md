@@ -223,6 +223,13 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Fix:** a mask that covers every channel the format has is a whole clear (`mtl_pf_chmask`).
 - **Found on:** [FINAL FANTASY TACTICS - The Ivalice Chronicles](../../dm/games/010038B015560000/README.md).
 
+### Texture clears with partial channel masks or regions
+
+- **Symptom:** `texture clear case not implemented … mask 0x8` while entering a rendered scene.
+- **Cause:** `ClearTexture` only handled whole-level clears whose mask covered every channel. Persona 5 Royal clears only alpha on a 1920x1080 RGBA8 target; a load-action clear cannot preserve its RGB channels.
+- **Fix:** partial colour texture clears use the existing clear-triangle shaders in a load/store pass, with the requested channel mask and rectangle. The viewport comes from the selected mip, the region selects the slices or depth planes, and the current draw scissor does not affect the operation. Whole-level whole-channel clears keep the load-action path. `t_clear_tex` checks pixel and channel preservation, mip/layer selection, integer values, an empty mask and the whole-clear path under Metal validation.
+- **Found on:** [Persona 5 Royal](../../dm/games/01005CA01580E000/README.md), the opening casino.
+
 ### Scissored colour clears
 
 - **Cause:** NVN `ClearColor` honours the scissor. Clears are normally folded into the next pass's load action, which only works for a full-target clear; Mario clears sub-rectangles of small targets to zero (pyramid levels packed into 480×272, 256×256 and 64×36 targets).
@@ -635,6 +642,13 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Fix:** `profile_guess.py` decides `graphics gl` when `main` imports `eglCreateWindowSurface` and names `glShaderSource`, and now leaves `vkGetInstanceProcAddr` out of its Vulkan count.
 - **Found on:** [Digimon Story Cyber Sleuth: Complete Edition](../../dm/games/010014E00DB56000/README.md): `main` imports `nvnBootstrapLoader` and 13 EGL functions. Its graphics setup (`main+0x5ed8f0`) makes an NVN device first, which only a helper beside the movie player uses (`main+0x528000`–`+0x52c400`: a memory pool and four textures next to the movie's GL textures). Then `eglGetDisplay`, `eglBindAPI(EGL_OPENGL_API)`, a 4.5 core context, a window surface on `vi::CreateLayer(w, h)` and a glad loader (`main+0x52c460`). Of the 22 games extracted here (at the time), only Digimon matches the rule. [Balatro](../../dm/games/0100CD801CE5E000/README.md) (SDK 18.3.2, LÖVE 11.4 on OpenGL with SDL and LuaJIT; one boot): `main` imports the EGL functions and `vkGetInstanceProcAddr`, SDL's Vulkan loader, which nothing calls (`subsdk1` is NVIDIA's Vulkan driver); Hades and both Galaxies import 99 or 100 Vulkan functions, `vkCreateInstance` among them.
 - **Note:** [Absolum](../../dm/games/0100A83022A22000/README.md) imports the same EGL functions (SDL3) but renders with NVN and names no GL function.
+
+### NVN in NROs under an SDL main that names GL
+
+- **Symptom:** the NSP script took the game for an OpenGL one (`main imports EGL and names glShaderSource`), the GL shader capture found no shader, and the capture boot stopped with `[nvn-mtl] FATAL cannot read the shader map` from `h_nvnQueueSubmitCommands` called in an NRO (`nro8+0xc10d0`).
+- **Cause:** Portal's `main` is SDL with its EGL video backend; it imports 20 EGL functions and names `glShaderSource` twice (SDL's GL renderer), but imports no NVN and draws nothing. The renderer is in the Source engine NROs: `materialsystem.nro` (with the D3D9 layer linked in) and `video_nx.nro` import `nvnBootstrapLoader` and draw with NVN.
+- **Fix:** `profile_guess.py` `shader_sources` now reads the imports of the loose NROs in the RomFS (`romfs_nro_imports`): when one imports `nvnBootstrapLoader`, the game is an NVN game whatever `main` imports. Digimon keeps the GL rule: it has no NRO.
+- **Found on:** [Portal](../../dm/games/01007BB017812000/README.md).
 
 ### Which GL functions a game calls
 

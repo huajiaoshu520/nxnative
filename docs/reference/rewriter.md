@@ -2,6 +2,24 @@
 
 The NSO rewriter (`dm/tools/patch_nso.py`) and its per-build tables (`dm/tools/sdk_patches.py`, a profile's `patches.py`). Each entry: symptom, cause, fix, the games it was found on. The [symptom index](../agents/symptoms.md) lists every symptom.
 
+## Patches across updates
+
+### Function-matched cuts for unregistered builds
+
+- **Symptom:** an updated game loses a needed cut because its NSO build ID changed, although the relevant code still matches a verified version; the rewriter reports `[RED] function patch ... skipped` when that match cannot be established.
+- **Cause:** fixed-address `CUTS` correctly apply only to their registered builds. Copying an old address, or matching a short instruction sequence, does not identify the updated function.
+- **Fix:** a profile can opt individual cuts into `MATCH_CUTS` in its `patches.py`. The shared matcher, `dm/tools/nso_match.py`, selects a unique complete unwind function by length and SHA-256 fingerprint. It retains constants, registers and internal branch destinations; normalizes relocation addresses; and checks the normalized bodies of direct callees or their imported symbol names. Original bytes are checked again before a cut is applied. Missing boundaries, unknown callees, changed code and ambiguous matches produce a red diagnostic and no cut. Overlapping rules stop the rewrite. Every accepted cut is recorded in `<module>.cuts.tsv` with `[function match]` in its reason.
+- **Scope:** the repository profile selected by `DM_GAME`, keyed by module name. A derived profile still uses that repository profile's rules. Other games' rules never participate. A build with registered `CUTS` uses those instead, including an explicitly empty list. SDK patches, observation gates, frame-step stubs and fixed host addresses retain their existing build-ID gates. The rewrite cache includes the selected profile's patch file even for unknown builds, the selected game ID and the matching tool.
+- **Limits:** this is an opt-in code-identity check, not automatic compatibility for every game update. Direct callee bodies are checked one level deep; their callees, indirect-call targets and external data layouts are not proven unchanged. Enroll only a cut whose assumptions remain valid under those changes. Prefer fixing the general host behavior when possible. A replacement must contain no PC-relative instruction; relocated branch replacements need a different mechanism. Failure leaves the game potentially without its workaround, and stays visible in the rewrite log.
+- **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md#memory), whose former resource-heap allowance was missing on 1.0.1. The shared matcher remains, but Wonder's allowance and matching rule were later removed after the general command-record fix described in its game note.
+
+To enroll a cut for any game's own module:
+
+1. Start from a verified fixed cut and its original NSO. Run `python3 dm/tools/nso_match.py <module.nso> <offset> <old hex> <new hex> <reason>` with the tools' Python environment. It emits a rule containing `name`, `size`, `fingerprints` and function-relative `cuts`, and rejects an ambiguous reference. Keep game files and scratch outputs in the game's NSP work folder.
+2. Check the function and callees in another known build using `nso_fnmap.py` and disassembly. Check that the cut still has the same effect. `Image.match(rule)` must resolve the reviewed location. If a reviewed implementation differs, generate its fingerprint separately; combine fingerprints only when function size and relative cuts agree. Retain exact `CUTS` for known builds.
+3. Add the rule under `MATCH_CUTS = {'main': [rule]}` (or the appropriate non-SDK module) in that game's `patches.py`. Record the evidence and remaining runtime validation in the game's note. Do not transplant a workaround into unrelated games.
+4. Verify an unregistered build-ID copy through the rewriter, comparing its output with the known fixed cut, and run `test_nso_match.py`, `test_patches.py` and `test_nro_pack.py`. The matching tests use synthetic modules from two profiles to check relocation, rejection and isolation without game files.
+
 ## Jump tables
 
 ### Offset jump tables through x18 read at rewrite time
