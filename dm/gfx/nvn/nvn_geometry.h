@@ -70,19 +70,31 @@ static size_t nvn_geo_assemble(int prim, const uint32_t *src, size_t count, int 
 // One ordered compaction per draw. Output is a point/line/triangle list, so it
 // does not depend on Metal primitive-restart behaviour. Preserve triangle-strip
 // winding and the last vertex. Unwritten GS index slots are UINT_MAX.
+// Three dispatches, in order: geo_pack_count (a thread per invocation group counts the indices it
+// emits), geo_pack_scan (one thread turns the counts into offsets and writes the indirect arguments)
+// and geo_pack_write (a thread per group writes its indices at its offset). A single thread used to
+// walk every group: with it, each frame that drew OCTOPATH TRAVELER II's 129,032-triangle cube shadow mesh
+// (drawn in runs, nvn_geometry.inc geo_split) took about 300 ms; now only the first one is long.
 static const char k_nvn_geo_pack_msl[] =
 "#include <metal_stdlib>\nusing namespace metal;\n"
-"struct geo_pack { device const uint *src; device uint *dst; device uint *args; uint groups, stride, topology, capacity; };\n"
-"kernel void geo_pack_indices(constant geo_pack& j [[buffer(0)]]) {\n"
-" uint outn=0;\n"
-" for(uint g=0;g<j.groups;g++) { uint a=0,b=0,n=0;\n"
-"  for(uint i=0;i<j.stride;i++) { uint v=j.src[g*j.stride+i];\n"
-"   if(v==0xffffffffu) {n=0;continue;}\n"
-"   if(j.topology==1) {if(outn<j.capacity) j.dst[outn++]=v;}\n"
-"   else if(j.topology==6) {if(n && outn+2<=j.capacity) {j.dst[outn++]=b;j.dst[outn++]=v;}}\n"
-"   else if(n>=2 && outn+3<=j.capacity) {j.dst[outn++]=(n&1)?b:a;j.dst[outn++]=(n&1)?a:b;j.dst[outn++]=v;}\n"
-"   a=b;b=v;n++;\n"
-"  }\n"
+"struct geo_pack { device const uint *src; device uint *dst; device uint *args; uint groups, stride, topology, capacity; device uint *cnt; };\n"
+"static uint geo_group(constant geo_pack& j, uint g, bool w, uint o) {\n"
+" uint a=0,b=0,n=0,k=0;\n"
+" for(uint i=0;i<j.stride;i++) { uint v=j.src[g*j.stride+i];\n"
+"  if(v==0xffffffffu) {n=0;continue;}\n"
+"  if(j.topology==1) {if(w && o+k+1<=j.capacity) j.dst[o+k]=v; k+=1;}\n"
+"  else if(j.topology==6) {if(n) {if(w && o+k+2<=j.capacity) {j.dst[o+k]=b;j.dst[o+k+1]=v;} k+=2;}}\n"
+"  else if(n>=2) {if(w && o+k+3<=j.capacity) {j.dst[o+k]=(n&1)?b:a;j.dst[o+k+1]=(n&1)?a:b;j.dst[o+k+2]=v;} k+=3;}\n"
+"  a=b;b=v;n++;\n"
 " }\n"
-" j.args[0]=outn;j.args[1]=1;j.args[2]=0;j.args[3]=0;j.args[4]=0;\n"
-"}\n";
+" return k;\n"
+"}\n"
+"kernel void geo_pack_count(constant geo_pack& j [[buffer(0)]], uint g [[thread_position_in_grid]]) { if(g<j.groups) j.cnt[g]=geo_group(j,g,false,0); }\n"
+"kernel void geo_pack_scan(constant geo_pack& j [[buffer(0)]]) {\n"
+" uint s=0; for(uint g=0;g<j.groups;g++) {uint c=j.cnt[g]; j.cnt[g]=s; s+=c;}\n"
+" uint w=j.topology==1?1u:j.topology==6?2u:3u, n=s<=j.capacity?s:j.capacity-j.capacity%w;\n"
+" j.args[0]=n;j.args[1]=1;j.args[2]=0;j.args[3]=0;j.args[4]=0;\n"
+"}\n"
+"kernel void geo_pack_write(constant geo_pack& j [[buffer(0)]], uint g [[thread_position_in_grid]]) { if(g<j.groups) geo_group(j,g,true,j.cnt[g]); }\n";
+// The job record geo_pack reads (host side): the counts / offsets buffer holds a word per group
+typedef struct { uint64_t src, dst, args; uint32_t groups, stride, topology, capacity; uint64_t cnt; } nvn_geo_pack_job;

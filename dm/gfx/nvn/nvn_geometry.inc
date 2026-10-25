@@ -19,6 +19,55 @@ static id<MTLRenderPipelineState> geo_capture_pso(NvShader *vs) {
     else { hm_put_id(&g_pso_fail, &k, NSNull.null); MLOG("[RED] geometry vertex capture %s: %s", vs->key, e.localizedDescription.UTF8String); }
     return ps;
 }
+static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0);
+// A draw whose capture would need more scratch than the bound, drawn as smaller draws in the hardware's order: one instance at a time, then runs of a list topology's primitives
+// (points, lines, triangles, lines and triangles with adjacency), each with its own index range. The capture lays the vertices out by vertex number from the lowest index to the highest for
+// every instance, and the geometry shader's output takes room per primitive: OCTOPATH TRAVELER II draws 129,032 triangles of one mesh through a cube shadow map's geometry shader in its
+// first battle, which asked for more than the bound and was skipped. The index list is read once and cut into runs of at most GEO_RUN_PRIMS primitives whose index range takes at most
+// GEO_RUN_SPAN of capture; the runs skip the GPU wait their draw would take (the outer draw waited already, and nothing in between writes index or vertex data). Halving the list at every
+// level instead, each part reading its indices again and waiting for the GPU, made that one frame take 805 ms. Strips, fans and primitive restart cannot be cut that way. The draw's
+// primitive numbers restart at 0 in each run: its geometry shader (cb17a9453d4789d0, Unreal's one-pass point light shadow) reads only its index map by them, but one that read its
+// primitive ID would see other numbers than on the Switch (such draws were skipped before).
+// Returns 0 when the draw cannot be split (the caller reports it)
+enum { GEO_RUN_PRIMS = 4096 }; static const uint64_t GEO_RUN_SPAN = 64ull << 20;
+static int g_geo_split_depth;   // > 0 while geo_split draws its runs: they skip the GPU wait
+static int geo_split(NvProg *pr, const p_draw *dw, const p_draw_idx *di, int count, int instances, uint32_t first_instance) {
+    int prim = dw ? dw->prim : di->prim, per = prim == 0 ? 1 : prim == 1 ? 2 : prim == 4 ? 3 : prim == 10 ? 4 : prim == 12 ? 6 : 0;
+    if (!per || (di && S.restart.on) || count / per < 1) return 0;
+    static uint64_t nsplit; if (nsplit++ < 4) MLOG("geometry draw above the scratch bound: drawn in parts (vertex %s, geometry %s, %d primitives, %d instances)",
+                                                   pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[2] ? pr->sh[2]->key : "-", count / per, instances);
+    p_draw a = dw ? *dw : (p_draw){0}; p_draw_idx b = di ? *di : (p_draw_idx){0};
+    g_geo_split_depth++;
+    if (instances > 1) {
+        for (int i = 0; i < instances; i++) {
+            if (dw) { a.instances = 1; a.base_instance = (int32_t)(first_instance + i); geo_draw(pr, &a, NULL); }
+            else { b.instances = 1; b.base_instance = (int32_t)(first_instance + i); geo_draw(pr, NULL, &b); }
+        }
+        g_geo_split_depth--; return 1;
+    }
+    int np = count / per, isz = di ? 1 << di->itype : 0;
+    for (int p0 = 0; p0 < np;) {
+        int p1 = p0; uint32_t lo = UINT32_MAX, hi = 0;
+        while (p1 < np && p1 - p0 < GEO_RUN_PRIMS) {   // extend the run while its index range fits
+            uint32_t l = lo, h = hi;
+            for (int k = 0; k < per; k++) {
+                uint32_t v = (uint32_t)(p1 * per + k);
+                if (di) { v = 0; memcpy(&v, (const uint8_t *)(uintptr_t)di->ibuf + (size_t)(p1 * per + k) * isz, isz); }
+                l = MIN(l, v); h = MAX(h, v);
+            }
+            if (p1 > p0 && ((uint64_t)h - l + 1) * 144 * 4 > GEO_RUN_SPAN) break;
+            lo = l; hi = h; p1++;
+        }
+        if (p0 == 0 && p1 == np) {   // one run is the whole draw: its own outputs are what exceed the bound, so halve it
+            p1 = np / 2; if (!p1) { g_geo_split_depth--; return 0; }
+        }
+        if (dw) { a.first = dw->first + p0 * per; a.count = (p1 - p0) * per; geo_draw(pr, &a, NULL); }
+        else { b.ibuf = di->ibuf + ((uint64_t)(p0 * per) << di->itype); b.count = (p1 - p0) * per; geo_draw(pr, NULL, &b); }
+        p0 = p1;
+    }
+    g_geo_split_depth--;
+    return 1;
+}
 static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     NvShader *vs = pr->sh[0], *base = pr->sh[2];
     if (!vs || !vs->geo_fn || !base || !base->geo_vertices || pr->sh[3] || pr->sh[4] || S.tf_on) {
@@ -35,7 +84,7 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     for (int i = 0; i < vs->rf.nv; i++) if (vconv_wanted(&vs->rf, i, NULL, 0)) wait = 1;
     if (defer_has_active()) defer_fallback();
     lc_land(); rp_flush(); rp_end(); ubd_land();
-    if (wait) { mdi_wait(); if (g_mdi_ev.signaledValue < g_mdi_v) return; memset(g_vconv, 0, sizeof g_vconv); }
+    if (wait && !g_geo_split_depth) { mdi_wait(); if (g_mdi_ev.signaledValue < g_mdi_v) return; memset(g_vconv, 0, sizeof g_vconv); }
     if (ind) {
         uint32_t a[5] = {0}; size_t n = dw0 ? 16 : 20;
         if (!nvn_host_readable(ind, n)) { MLOG("[RED] geometry indirect arguments are not readable"); return; }
@@ -60,10 +109,11 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     if (!gs->geo_pso) { NSError *e = nil; gs->geo_pso = [g_dev newComputePipelineStateWithFunction:gs->fn error:&e];
         if (!gs->geo_pso) { MLOG("[RED] geometry compute %s: %s", gs->key, e.localizedDescription.UTF8String); return; } }
     if (gs->geo_pso.maxTotalThreadsPerThreadgroup < 32) { MLOG("[RED] geometry kernel cannot run a 32-thread group"); return; }
-    static id<MTLComputePipelineState> pack;
-    if (!pack) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_nvn_geo_pack_msl) options:nil error:&e];
-        if (lib) pack = [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"geo_pack_indices"] error:&e];
-        if (!pack) { MLOG("[RED] geometry index compaction: %s", e.localizedDescription.UTF8String); return; } }
+    static id<MTLComputePipelineState> pack[3];   // geo_pack_count, geo_pack_scan, geo_pack_write (nvn_geometry.h)
+    if (!pack[2]) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_nvn_geo_pack_msl) options:nil error:&e];
+        const char *fn[3] = {"geo_pack_count", "geo_pack_scan", "geo_pack_write"};
+        for (int i = 0; i < 3 && lib; i++) if (!(pack[i] = [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@(fn[i])] error:&e])) break;
+        if (!pack[2]) { pack[0] = pack[1] = nil; MLOG("[RED] geometry index compaction: %s", e.localizedDescription.UTF8String); return; } }
 
     uint32_t *order = malloc((size_t)count * 4), *unique = malloc((size_t)count * 4);
     if (!order || !unique) { free(order); free(unique); MLOG("[RED] geometry index allocation failed"); return; }
@@ -94,27 +144,29 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     uint64_t groups = np * (uint64_t)instances * gs->geo_invocations;
     if (groups > UINT32_MAX || span * (uint64_t)instances > (256ull << 20) / (144 * 4) ||
         (uint64_t)first_instance + instances > (uint64_t)UINT32_MAX + 1) {
-        free(order); free(unique); MLOG("[RED] geometry draw exceeds the capture or invocation bound"); return;
+        free(order); free(unique);
+        if (!geo_split(pr, dw0 ? &dw : NULL, dw0 ? NULL : &di, count, instances, first_instance)) MLOG("[RED] geometry draw exceeds the capture or invocation bound"); return;
     }
     uint64_t input_size = span * instances * 144 * 4;
     uint64_t output_size = groups * gs->geo_vertices * gs->geo_stride * 4;
     uint64_t raw_size = groups * gs->geo_index_stride * 4;
     uint64_t packed_size = groups * gs->geo_vertices * (gs->geo_output == 7 ? 3 : gs->geo_output == 6 ? 2 : 1) * 4;
-    uint64_t total = input_size + output_size + raw_size + packed_size + words * 4 + nu * 4 + 4096;
+    uint64_t total = input_size + output_size + raw_size + packed_size + groups * 4 + words * 4 + nu * 4 + 4096;
     if (groups > UINT32_MAX || total > (256ull << 20) || np > UINT32_MAX) {
-        free(order); free(unique); MLOG("[RED] geometry draw needs %llu MiB of scratch, above the 256 MiB bound", (unsigned long long)(total >> 20)); return;
+        free(order); free(unique);
+        if (!geo_split(pr, dw0 ? &dw : NULL, dw0 ? NULL : &di, count, instances, first_instance)) MLOG("[RED] geometry draw needs %llu MiB of scratch, above the 256 MiB bound", (unsigned long long)(total >> 20)); return;
     }
     id<MTLBuffer> scratch; size_t off = arena_alloc((size_t)total, &scratch);
     uint8_t *cpu = (uint8_t *)scratch.contents + off; uint64_t gpu = scratch.gpuAddress + off;
     size_t used = 0;
     #define GEO_ALLOC(N, G, P) do { used = (used + 255) & ~(size_t)255; (G) = gpu + used; (P) = cpu + used; used += (size_t)(N); } while (0)
-    uint64_t input, output, raw, packed, map, capture_ix, info, capture_info, args, job;
-    void *pinput, *poutput, *praw, *ppacked, *pmap, *pcapture_ix, *pinfo, *pcapture_info, *pargs, *pjob;
-    GEO_ALLOC(input_size, input, pinput); GEO_ALLOC(output_size, output, poutput); GEO_ALLOC(raw_size, raw, praw); GEO_ALLOC(packed_size, packed, ppacked);
+    uint64_t input, output, raw, packed, cnt, map, capture_ix, info, capture_info, args, job;
+    void *pinput, *poutput, *praw, *ppacked, *pcnt, *pmap, *pcapture_ix, *pinfo, *pcapture_info, *pargs, *pjob;
+    GEO_ALLOC(input_size, input, pinput); GEO_ALLOC(output_size, output, poutput); GEO_ALLOC(raw_size, raw, praw); GEO_ALLOC(packed_size, packed, ppacked); GEO_ALLOC(groups * 4, cnt, pcnt);
     GEO_ALLOC(words * 4, map, pmap); GEO_ALLOC(nu * 4, capture_ix, pcapture_ix); GEO_ALLOC(32, info, pinfo); GEO_ALLOC(32, capture_info, pcapture_info);
-    GEO_ALLOC(20, args, pargs); GEO_ALLOC(40, job, pjob);
+    GEO_ALLOC(20, args, pargs); GEO_ALLOC(sizeof(nvn_geo_pack_job), job, pjob);
     #undef GEO_ALLOC
-    (void)pinput; (void)poutput; (void)praw; (void)ppacked;
+    (void)pinput; (void)poutput; (void)praw; (void)ppacked; (void)pcnt;
     if (used > total) MDIE("geometry scratch size accounting");
     nvn_geo_assemble(prim, order, count, restart, restart_index, pmap, words);
     for (size_t i = 0; i < words; i++) ((uint32_t *)pmap)[i] -= lo;
@@ -126,7 +178,7 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     uint64_t ci[2] = {input, 0}; memcpy(pcapture_info, ci, 16);
     uint32_t cc[4] = {(uint32_t)first, (uint32_t)span, first_instance, (uint32_t)instances}; memcpy((uint8_t *)pcapture_info + 16, cc, 16);
     memset(pargs, 0, 20);
-    struct { uint64_t src, dst, args; uint32_t groups, stride, topology, capacity; } pj = {raw, packed, args, (uint32_t)groups, gs->geo_index_stride, gs->geo_output, (uint32_t)(packed_size / 4)};
+    nvn_geo_pack_job pj = {raw, packed, args, (uint32_t)groups, gs->geo_index_stride, gs->geo_output, (uint32_t)(packed_size / 4), cnt};
     memcpy(pjob, &pj, sizeof pj);
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     MTL4RenderPassDescriptor *rd = [MTL4RenderPassDescriptor new]; rd.renderTargetWidth = rd.renderTargetHeight = rd.defaultRasterSampleCount = 1;
@@ -141,8 +193,10 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     id<MTL4ComputeCommandEncoder> ce = enc_c_begin(NULL);
     args_dirty_all(); encode_args(ce, gs, 2, 0); enc_c_pso(ce, gs->geo_pso);
     enc_c_dispatch(ce, MTLSizeMake((np + 31) / 32, instances, gs->geo_invocations), MTLSizeMake(32, 1, 1)); enc_c_end(ce);
-    ce = enc_c_begin(NULL); enc_c_pso(ce, pack); enc_c_args(ce, job, 0);
-    enc_c_dispatch(ce, MTLSizeMake(1, 1, 1), MTLSizeMake(1, 1, 1)); enc_c_end(ce);
+    for (int i = 0; i < 3; i++) {   // count per group, offsets (one thread), write per group: each waits for the one before
+        ce = enc_c_begin(NULL); enc_c_pso(ce, pack[i]); enc_c_args(ce, job, 0);
+        enc_c_dispatch(ce, i == 1 ? MTLSizeMake(1, 1, 1) : MTLSizeMake((groups + 63) / 64, 1, 1), MTLSizeMake(i == 1 ? 1 : 64, 1, 1)); enc_c_end(ce);
+    }
     args_dirty_all(); g_enc_pso = nil; g_enc_dss = nil; g_ed.ok = 0;
     swrite_note(pr); udc_note_draw(pr); g_wr_epoch++; g_mdx_epoch++;
     if (S.rast_discard) return;

@@ -201,6 +201,8 @@ static void module_data_query(const module_t *m, uint64_t off, uint64_t *lo, uin
 }
 static int map_source_backed(uint64_t src, uint64_t size) {
     if (memory_contains((uintptr_t)g_heap, g_heap_cur, src, size)) return 1;
+    int dm_ue_heap_owns(uint64_t a, uint64_t n);   // Unreal's heap on a host malloc zone outside the guest block (hle_uemalloc.c): Unreal allocates its threads' stacks there
+    if (dm_ue_heap_owns(src, size)) return 1;
     if (memory_contains((uintptr_t)g_alias, g_alias_cap, src, size))
         return !alias_unmapped(src - (uintptr_t)g_alias, size);
     module_t *m = module_of((void *)(uintptr_t)src);
@@ -299,7 +301,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         pthread_mutex_lock(&g_map_lock);
         if (map_find(dst, size) || map_source_busy(src, size) || !map_source_backed(src, size)) result = 0xD401;
         else if (g_nmap == MAX_MAP) result = 0xCE01;
-        if (result) { pthread_mutex_unlock(&g_map_lock); regs[0] = result; return 0; }
+        if (result) { pthread_mutex_unlock(&g_map_lock); regs[0] = result; LOG("[RED] MapMemory refused (%#x): %#llx <- %#llx +%#llx", result, (unsigned long long)dst, (unsigned long long)src, (unsigned long long)size); return 0; }
         // Apple pages are 16K, Horizon pages 4K: the accessible region is extended to a 16K boundary (the extra pages opened are unused pages of the same region, semantics unaffected)
         uint64_t mask = (size_t)getpagesize() - 1;
         uint64_t lo = dst & ~mask, hi = (dst + size + mask) & ~mask;

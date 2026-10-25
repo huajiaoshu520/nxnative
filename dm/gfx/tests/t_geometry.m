@@ -37,17 +37,19 @@ static void assembly(void) {
 }
 static void pack_test(void) {
     id<MTLLibrary> l=library(@(k_nvn_geo_pack_msl)); NSError *e=nil;
-    id<MTLComputePipelineState> p=[g_dev newComputePipelineStateWithFunction:[l newFunctionWithName:@"geo_pack_indices"] error:&e];
-    if(!p) abort();
+    id<MTLComputePipelineState> p[3]; const char *fn[3]={"geo_pack_count","geo_pack_scan","geo_pack_write"};
+    for(int i=0;i<3;i++) { p[i]=[g_dev newComputePipelineStateWithFunction:[l newFunctionWithName:@(fn[i])] error:&e]; if(!p[i]) abort(); }
     uint32_t data[]={0,1,2,3,UINT32_MAX,4,5,6, UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX, 8,9,10,UINT32_MAX,11,12,13,UINT32_MAX};
     uint32_t want[]={0,1,2,2,1,3,4,5,6,8,9,10,11,12,13};
     id<MTLBuffer> b=[g_dev newBufferWithLength:4096 options:MTLResourceStorageModeShared]; res_add(b);
     for(int t=0;t<3;t++) {
         memset(b.contents,0xcc,4096); memcpy(b.contents,data,sizeof data);
-        struct {uint64_t src,dst,args;uint32_t groups,stride,topology,capacity;} j={b.gpuAddress,b.gpuAddress+512,b.gpuAddress+1024,3,8,t==0?7:t==1?6:1,100};
+        nvn_geo_pack_job j={b.gpuAddress,b.gpuAddress+512,b.gpuAddress+1024,3,8,t==0?7:t==1?6:1,100,b.gpuAddress+3072};
         memcpy((char*)b.contents+2048,&j,sizeof j);
-        mtl_sub_begin(); id<MTL4ComputeCommandEncoder> en=enc_c_begin(NULL); enc_c_pso(en,p);enc_c_args(en,b.gpuAddress+2048,0);
-        enc_c_dispatch(en,MTLSizeMake(1,1,1),MTLSizeMake(1,1,1));enc_c_end(en);finish();
+        mtl_sub_begin();
+        for(int i=0;i<3;i++) { id<MTL4ComputeCommandEncoder> en=enc_c_begin(NULL); enc_c_pso(en,p[i]);enc_c_args(en,b.gpuAddress+2048,0);
+            enc_c_dispatch(en,MTLSizeMake(1,1,1),MTLSizeMake(i==1?1:64,1,1));enc_c_end(en); }
+        finish();
         uint32_t *args=(uint32_t*)((char*)b.contents+1024);
         EXPECT("compacted index count",t==0?15:t==1?18:13,args[0]);
         EXPECT("indirect instance count",1,args[1]);

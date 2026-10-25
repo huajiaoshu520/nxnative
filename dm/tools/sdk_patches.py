@@ -148,4 +148,11 @@ CUTS = {
     (0x1423fc, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x142468, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
   ],
+  # OCTOPATH TRAVELER II 1.1.1 (v131072) sdk (SDK 12.3.2): the AddressRegionManager node area cut, as DRAGON QUEST VII Reimagined's (Unreal Engine 4.27 as well). The constructor is at
+  # sdk+0x346180: +0x346190 sets the node area limit, +0x34622c registers it as an occupied region. Unreal's engine region (-SwitchVirtualAddressSpaceSize, the profile's game_args) then
+  # starts 62 MB into the alias region
+  '5bcf525f24eb28658a8d67ac27800d9b': [
+    (0x346190, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x34622c, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+  ],
 }

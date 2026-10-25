@@ -8,9 +8,10 @@ Everything here was learned on Diablo II: Resurrected (SDK ~12, NVN 53, the orig
 |---|---|
 | [01-extract.md](01-extract.md) | Keys, NSP → NCA → ExeFS / RomFS, update NSPs, the workspace layout |
 | [02-survey.md](02-survey.md) | Static survey of a new title before touching the host: SDK version, imports vs. host hooks, SVCs, instructions to rewrite, NVN surface, data containers, Ghidra / REA setup |
-| [03-bringup.md](03-bringup.md) | Getting the host to boot the game: the run loop, how to read the log, and a catalogue of every failure pattern met so far with its root cause and fix |
-| [04-graphics.md](04-graphics.md) | NVN on Metal for a new title: object sizes, shader containers and keys, binding layouts, bindless textures, depth mode, index sizes, swizzle, transient render targets, the diagnostic switches |
+| [03-bringup.md](03-bringup.md) | Getting the host to boot the game: the run loop and how to read the log; the failures met so far are in the [subsystem references](../reference/README.md), found through the [symptom index](symptoms.md) |
+| [04-graphics.md](04-graphics.md) | NVN on Metal for a new title: finding every shader container, shader keys, binding layouts, bindless textures, depth mode, the diagnostic switches; what other titles needed is in the [rendering](../reference/rendering.md), [shaders](../reference/shaders.md) and [NVN objects](../reference/nvn-objects.md) references |
 | [05-debugging.md](05-debugging.md) | Recipes: crash reports, lldb scripts, Ghidra headless decompilation, objdump, memory growth, render-pass and texture dumps, on-device diagnostics, offline pipeline link checks |
+| [symptoms.md](symptoms.md) | One line per symptom met so far (an assertion, a `[RED]` line, an abort or crash site, a visible result) → the reference entry that explains it |
 
 ## Ground rules
 
@@ -31,9 +32,9 @@ Everything here was learned on Diablo II: Resurrected (SDK ~12, NVN 53, the orig
 2. Extract base (and update, if in scope) — [01](01-extract.md). Finish the survey — [02](02-survey.md). Write down: SDK version, NVN API version, module list, imports the host lacks, SVCs, instruction census, NVN loader pattern, shader containers.
 3. Add a game profile `dm/games/<title ID>/game.tsv`, named after the base game's title ID (start from `010015100B514000/game.tsv`: identity, `build` rows, `modules`; keep the memory / NVN values until they are measured) and build the host for it with `make -C dm/host GAME=<id>`.
 4. Run the rewriter and check its counts against `insn_census.py`.
-5. Boot on the Mac and iterate on the failure catalogue in [03](03-bringup.md) until the game reaches its frame loop.
+5. Boot on the Mac and iterate ([03](03-bringup.md)) until the game reaches its frame loop: look up each failure in the [symptom index](symptoms.md), which leads to its entry in the [subsystem references](../reference/README.md).
 6. Extract and translate the shaders, find the binding layout by census, and get the first frame — [04](04-graphics.md).
 7. Check memory over a minute of running (`footprint`, the host's memory report line); fix growth before moving on.
 8. Input, audio, then the iOS bundle (d2r-mobile's `dm/ios`, RomFS inside the app).
-9. Test on a phone: an unsigned IPA the user sideloads, switches through `env.txt`, results through `Documents/log.txt` ([05](05-debugging.md)). Several bugs only showed there (the command-buffer byte and the audio buffer size in [03](03-bringup.md), pipeline link failures in later levels in [04](04-graphics.md)).
+9. Test on a phone: an unsigned IPA the user sideloads, switches through `env.txt`, results through `Documents/log.txt` ([05](05-debugging.md)). Several bugs only showed there (the [command-buffer byte](../reference/nvn-objects.md#inlined-sdk-code-writes-into-nvncommandbuffer-0x10) and the [audio buffer size](../reference/audio.md#remoteios-default-io-buffer-duration), pipeline link failures in later levels in [04](04-graphics.md)).
 10. For a game update: extract it over the base game, diff the imports, carry the per-build addresses over, and rebuild the shader tables for both versions ([01](01-extract.md)).

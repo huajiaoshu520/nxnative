@@ -41,6 +41,11 @@ static const struct { const char *build, *what; uint64_t ptr_off; uint32_t field
     // (BaseSwitchDeviceProfiles.ini). Registered at main+0x33a4dec (float, IConsoleManager slot 2; AsVariableFloat stored at +0x10) and main+0x149e0bc (int, slot 1; AsVariableInt at +0x10)
     { "84e182f72ee1da4f477804bd05b54c15", "Unreal t.MaxFPS", 0x8c29af0 + 0x10, 0, FPS_F32, 2 },
     { "84e182f72ee1da4f477804bd05b54c15", "Unreal rhi.SyncInterval", 0x8adca10 + 0x10, 0, VSYNCS_I32, 2 },
+    // OCTOPATH TRAVELER II 1.1.1: Unreal Engine 4.27's t.MaxFPS and rhi.SyncInterval, the same layout (names in UTF-16). The game's Switch device profile sets t.MaxFPS=30 and
+    // rhi.syncinterval=2 (Majesty/Config/Switch/SwitchDeviceProfiles.ini; its Windows, PS4 and PS5 profiles set t.MaxFPS=60). Registered at main+0x2e50444 (float, AsVariableFloat stored at
+    // +0x10) and main+0x134d380 (int, AsVariableInt at +0x10)
+    { "0d9649011312f62e93f6a5673a09d7e9", "Unreal t.MaxFPS", 0x76fef58 + 0x10, 0, FPS_F32, 2 },
+    { "0d9649011312f62e93f6a5673a09d7e9", "Unreal rhi.SyncInterval", 0x75ad0d0 + 0x10, 0, VSYNCS_I32, 2 },
     // Luigi's Mansion 3 1.4.0: Next Level Games' frame limiter. At the end of each frame the main thread calls the frame callbacks (main+0xb7c308) with the milliseconds since the frame
     // started; the limiter (main+0x7a3e70) runs jobs or sleeps until 33.333 ms have passed, the float at main+0x13c94dc (read only there, at main+0x7a3ea8 and main+0x7a3f18), and the game
     // steps by the time that really passed. The game asks for present interval 2 too, which the profile's present_interval display ignores; both are needed
