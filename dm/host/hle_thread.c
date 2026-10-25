@@ -55,7 +55,7 @@ typedef struct thr {
     // Current wait: kind 0=none 1=lock 2=condition 3=address 4=synchronization object
     int wkind, woke; uint64_t waddr, wkey; uint32_t wtag; int64_t wres;
     _Atomic int sleeping;      // inside SleepThread's timed sleep (not runnable; used by dm_yield_to_core_peers)
-    int yield_pending;         // this SVC woke a higher-priority thread pinned to this core: let it run before the SVC returns (svc_thread)
+    int yield_pending;         // this caller woke a higher-priority thread pinned to its core: hand off before returning to guest code
     _Atomic int *host_work;    // points at the thread's dm_host_work (registered when the thread starts)
     int host_owned;            // a guest thread the host created itself (dm_guest_thread_spawn): it waits in host code and is not one of the game's threads
     uint64_t wseq;             // Sequence number of wait registration: at equal priority first come, first woken (same order as the Horizon kernel's KThread wait tree)
@@ -85,7 +85,8 @@ typedef struct thr {
 } thr_t;
 static thr_t *g_all;
 extern __thread _Atomic int dm_host_work;   // declared in hle.h too; defined in hle_nvn.c
-static _Atomic uint64_t g_preempt_n, g_preempt_ns, g_preempt_cap;   // same-core preemption yields: count, total wait, cap hits (svc_thread)
+static _Atomic uint64_t g_preempt_n, g_preempt_ns;   // same-core handoffs: count and total wait (svc_thread)
+static int g_core_preempt;   // also check already-runnable peers after every thread SVC (profile / DM_PREEMPT)
 
 static pthread_mutex_t G = PTHREAD_MUTEX_INITIALIZER;
 #define MAX_H 4096
@@ -114,34 +115,26 @@ static thr_t *cur(void) {
     if (!t) die("thread SVC called from a non-guest thread");
     return t;
 }
-// Let higher-priority threads of the same core run first: Horizon schedules per core, and when a signal from one thread wakes a higher-priority thread pinned to the same core, that thread preempts at once and runs until it blocks again before the signalling thread continues.
-// Some games rely on this as synchronization: in Metroid Dread's movie player the main thread (priority 44, core 0) posts "tear down the decoder" to the dispatcher and worker threads (priority 30, core 0 only), then frees the object without waiting
-// and builds the next one in the same memory; on the host the threads truly run in parallel, the dispatcher still had the old holders linked and the worker still had the old object queued, so SignalEvent hit a null MultiWait and the worker read a freed object.
-// svc_thread calls it after an SVC that woke such a thread: it waits until every started, unexited, not host-created thread allowed only on this core with a higher priority is waiting or sleeping, for at most max_us; returns −1 on timeout
+// Horizon's per-core priority ordering: a woken higher-priority thread pinned to
+// the caller's core runs until it blocks before the signalling thread continues.
+// See docs/reference/threads.md, "Same-core wake handoffs", for the movie lifetime failure this prevents.
+// svc_thread calls it after waking such a thread. Wait for guest blocking, not a host dispatch snapshot or a wall-clock deadline: neither establishes that the work has finished.
 void dm_thread_mark_host(void) { thr_t *t = pthread_getspecific(g_keythr); if (t) t->host_owned = 1; }
-// Whether a thread is really running: besides guest waits / timed sleeps it may be blocked in host code (an HLE call waiting on a host condition variable, the GPU, a file), which has no guest wait kind; only the kernel's thread state tells
-static int thr_running(const thr_t *t) {
-    if (t->wkind || t->sleeping || !t->mport || (t->host_work && *t->host_work)) return 0;
-    thread_basic_info_data_t bi; mach_msg_type_number_t n = THREAD_BASIC_INFO_COUNT;
-    if (thread_info(t->mport, THREAD_BASIC_INFO, (thread_info_t)&bi, &n) != KERN_SUCCESS) return 0;
-    return bi.run_state == TH_STATE_RUNNING;
+// Holding G. wake() clears wkind before the pthread resumes; it must already count as runnable in that window, even if Mach still reports WAITING / STOPPED.
+// Explicit host GPU work does not occupy a guest core. Ordinary host dispatch delays and HLE calls do, until a guest wait / sleep / exit says otherwise.
+static int thr_runnable(const thr_t *t) {
+    return !t->wkind && !t->sleeping && !t->pause_req && !(t->host_work && *t->host_work);
 }
-int dm_yield_to_core_peers(unsigned max_us) {
+int dm_yield_to_core_peers(void) {
     thr_t *self = pthread_getspecific(g_keythr); if (!self) return 0;
-    uint64_t bit = 1ull << (self->core & 63), t0 = now_ns(); int waited = 0;
+    uint64_t bit = 1ull << (self->core & 63); int waited = 0;
     for (;;) {
-        thr_t *busy = NULL;
+        int busy = 0;
         pthread_mutex_lock(&G);
         for (thr_t *t = g_all; t && !busy; t = t->all)
-            if (t != self && t->started && !t->exited && !t->host_owned && t->mask == bit && t->prio < self->prio && thr_running(t)) busy = t;
-        uint32_t bh = busy ? busy->handle : 0; int bp = busy ? busy->prio : 0; uint64_t blr = busy ? busy->last_lr : 0; int bsvc = busy ? busy->last_svc : 0;
+            if (t != self && t->started && !t->exited && !t->host_owned && t->mask == bit && t->prio < self->prio && thr_runnable(t)) busy = 1;
         pthread_mutex_unlock(&G);
         if (!busy) return waited;
-        if (now_ns() - t0 > (uint64_t)max_us * 1000) {
-            static _Atomic int nlog; if (nlog++ < 8) { module_t *m = module_of((void *)blr);   // the first few cap hits: who waits, who keeps running
-                LOG("same-core preemption yield hit its cap: thread %#x (priority %d core %d) waits for %#x (priority %d, last svc %#x lr=%s+%#llx)", self->handle, self->prio, self->core, bh, bp, bsvc, m ? m->name : "?", (unsigned long long)(m ? blr - (uint64_t)m->base : blr)); }
-            return -1;
-        }
         { struct timespec ts = {0, 50000}; nanosleep(&ts, 0); } waited = 1;
     }
 }
@@ -418,6 +411,7 @@ static void hitch_init(void) {
 uint32_t svc_thread_main_init(void) {
     pthread_key_create(&g_keythr, NULL);
     qos_map_init();
+    { const char *e = getenv("DM_PREEMPT"); g_core_preempt = e ? atoi(e) != 0 : DM_GAME_CORE_PREEMPT; }
     pause_install();
     hitch_init();
     thr_t *t = calloc(1, sizeof *t);
@@ -566,7 +560,7 @@ void svc_thread_dump(void) {
     static const char *kinds[] = {"running/not waiting", "mutex", "condvar", "address", "sync object"};
     int nh = 0; for (int i = 1; i < MAX_H; i++) nh += g_h[i].type != O_FREE;
     fprintf(stderr, "[dm] handle table use %d / %d, threads created so far %llu\n", nh, MAX_H, g_next_id - 0x51);
-    fprintf(stderr, "[dm] same-core preemption yields %llu, total %.1f ms, hit the cap %llu times\n", (unsigned long long)g_preempt_n, g_preempt_ns / 1e6, (unsigned long long)g_preempt_cap);
+    fprintf(stderr, "[dm] same-core handoffs %llu, total %.1f ms\n", (unsigned long long)g_preempt_n, g_preempt_ns / 1e6);
     for (thr_t *t = g_all; t; t = t->all) {
         module_t *m = module_of((void *)t->last_lr);
         // Thread name: SDK ThreadType+0x1a0 is the name pointer (ThreadManager::SetInitialThreadNameUnsafe 0x34a2a4); x2 of CreateThread = ThreadType*
@@ -620,10 +614,9 @@ void svc_thread_dump(void) {
     }
 }
 
-// An approximation of same-core preemption: when an SVC woke a higher-priority thread pinned to this core, wait before the SVC returns until those threads (and every other higher-priority thread of this core) block, for at most 5 ms.
-// Metroid Dread's movie player relies on it: the main thread posts "unlink the holders" to the dispatcher thread (priority 30, core 0 only) and leaves messages for the worker thread, then frees the object and builds a new one in its place;
-// on hardware the dispatcher / worker preempt the main thread as soon as it signals and finish first, while on the host, without the wait, old holders got re-initialized and the worker read freed objects (crashes in SignalEvent on a null MultiWait and at main+0x225338).
-// On per the game profile's core_preempt (off by default: Mario's loader threads would wait for busy high-priority decompression threads, pushing its first frame from 0.6 s to 2.9 s); DM_PREEMPT=0 / 1 overrides the profile. Counts are in the thread state dump
+// Same-core wake handoffs apply to every game. core_preempt additionally checks
+// already-runnable peers after every thread SVC; DM_PREEMPT overrides that option.
+// These are cooperative boundaries, not an asynchronous guest-core scheduler.
 static int svc_thread_impl(int num, uint64_t *regs);
 // Yield back-off: on the Switch a yield with nothing else runnable costs nothing, but a guest loop that polls the tick and yields (Three Houses' frame limiter main+0x5be430 waited out each 33 ms frame this way:
 // 228,105 yields per frame on an iPhone, a P-core at full clock; a per-build cut in its patches.py now makes it sleep) becomes a host busy spin. A run of yields with no other SVC between them (and no progress, thr_yield) is let through as plain sched_yield for its first 2 ms;
@@ -754,12 +747,12 @@ void dm_guest_sleep_ns(int64_t ns) {
 int svc_thread(int num, uint64_t *regs) {
     int r = svc_thread_impl(num, regs);
     thr_t *me = pthread_getspecific(g_keythr);
-    static int on = -1; if (on < 0) { const char *e = getenv("DM_PREEMPT"); on = e ? atoi(e) != 0 : DM_GAME_CORE_PREEMPT; }
-    // Not only "whom did this SVC wake": when a higher-priority thread of the same core is already running (busy, not waiting, at the time of the signal), on hardware the calling thread does not get the CPU at all.
-    // Metroid Dread: with the dispatcher thread busy, the main thread's "unlink the holders" request woke nobody, the object was freed right away, and the dispatcher later walked the freed holders in WaitAny and crashed
-    if (me && on) {
-        uint64_t t0 = now_ns(); int w = dm_yield_to_core_peers(5000);
-        if (w) { if (w < 0) g_preempt_cap++; g_preempt_n++; g_preempt_ns += now_ns() - t0; }
+    // The default path hands off only after a wake. The optional broader mode
+    // also checks peers that were already runnable, without serializing every
+    // game's SVCs behind unrelated busy workers by default.
+    if (me && (g_core_preempt || me->yield_pending)) {
+        uint64_t t0 = now_ns(); int w = dm_yield_to_core_peers();
+        if (w) { g_preempt_n++; g_preempt_ns += now_ns() - t0; }
     }
     if (me) me->yield_pending = 0;
     return r;

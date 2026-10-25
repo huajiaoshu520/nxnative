@@ -134,7 +134,7 @@ static void md_event(mdec_t *d, int i) {   // 0 input 1 output 2 format 3 error
 // Deferred events: "input available" after Start / Flush. The SDK's decoder signals it asynchronously from its own codec thread; Metroid Dread calls InitializeMultiWaitHolder before RegisterClientEvents
 // and only later links the holders into its MultiWait. Signalled synchronously inside Start, the holders were not linked yet and SignalEvent crashed in MultiWaitImpl::NotifyAndWakeupThread on a null MultiWait (0x20)
 // (it showed only when a decoder was built a second time in the same memory). A guest thread now signals it about 2 ms later (SignalEvent is guest code and must be called on a guest thread); the destructor drops that decoder's pending signals under the same lock.
-// The root of that crash and of the worker crash at main+0x225338 was missing same-core preemption (the game's dispatcher and worker preempt the main thread on hardware); hle_thread.c now approximates it (svc_thread, dm_yield_to_core_peers)
+// The movie player's dispatcher and worker must also finish their requests before the posting thread continues; the shared SVC wake handoff supplies that ordering (hle_thread.c).
 void *dm_guest_thread_spawn(void (*fn)(void *), void *arg, int prio, size_t stack_size);
 static pthread_mutex_t g_dfmu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_dfcv = PTHREAD_COND_INITIALIZER;
 static struct { void *d; int ev; uint64_t due; } g_dfq[64]; static int g_ndfq, g_dfthr;
@@ -170,22 +170,6 @@ static void md_defer_body(void *arg) {
         else { uint64_t w = next - now; struct timespec ts = { (time_t)(w / 1000000000u), (long)(w % 1000000000u) }; pthread_cond_timedwait_relative_np(&g_dfcv, &g_dfmu, &ts); }
     }
 }
-// Metroid Dread 2.1.0's movie player: the main thread posts "link / unlink holders" requests into the dispatcher thread's request ring (main+0x222cc8: ring +0x368 write pointer, +0x370 pending count;
-// the dispatcher links or unlinks each entry in main+0x222d94, finalizes the holders and events, and counts the pending number down to 0) and goes on without waiting: after an unlink it frees the wrapper object and builds a new one in place, after a link it calls Start at once.
-// On hardware the dispatcher thread (priority 30, core 0 only) preempts the main thread (priority 44, core 0) and the requests are done first; on the host the threads run in parallel, the memory was reused while the old holders were still linked into the dispatcher's MultiWait,
-// and WaitAny / SignalEvent walked into freed holders (the core_preempt approximation does not cover it: with the dispatcher busy, posting wakes nobody, and the main thread makes no SVC on the way).
-// The rewriter puts observation gates on the instruction after each "one request posted" (OBS 19 / 20 in Metroid Dread's patches.py, for this build only); here we wait for the pending count to reach zero, for at most 3 s.
-// 100 ms was too short once the Mac was saturated (an iOS shader build in parallel): the wait ran out with one request pending and WaitAny crashed right after. Waits over 50 ms are logged (the first eight)
-static void movie_ring_wait(const uint64_t *regs) {
-    const volatile uint64_t *pending = (const volatile uint64_t *)(regs[19] + 0x370);
-    uint64_t t0 = now_ns();
-    while (*pending) {
-        if (now_ns() - t0 > 3000000000ull) { static int r; if (!r++) LOG("[RED] movie: player request ring not drained in 3 s (%llu pending), letting it through anyway", (unsigned long long)*pending); return; }
-        struct timespec ts = {0, 50000}; nanosleep(&ts, 0);
-    }
-    uint64_t dt = now_ns() - t0; static _Atomic int nlong; if (dt > 50000000ull && nlong++ < 8) LOG("[movie] waited %.1f ms on the player request ring", dt / 1e6);
-}
-__attribute__((constructor)) static void movie_ring_gates(void) { gate_obs_set(OBS_MOVIE_RING_LINK, movie_ring_wait); gate_obs_set(OBS_MOVIE_RING_UNLINK, movie_ring_wait); }
 // log the first 12 calls one by one, then every 2^k-th (DM_MOVIE_TRACE=1: every call, with the calling thread and the decoder: Unity drives a movie's audio and video decoders from one thread)
 static int md_trace_all(void) { static int on = -1; if (on < 0) on = getenv("DM_MOVIE_TRACE") != NULL; return on; }
 #define MD_TRACE(d, slot, fmt, ...) do { unsigned long n_ = ++(d)->ncall[slot]; if (md_trace_all()) LOG("[movie] [%p] [%p] " fmt, (void *)pthread_self(), (void *)(d), ##__VA_ARGS__); \
