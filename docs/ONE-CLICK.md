@@ -34,14 +34,16 @@ python3 scripts/nx_one_click.py --list-games --json
 A shipped profile records known builds, not certification of complete iOS
 playability. Some games have only been tested on Mac; read each game's note in
 `dm/games/<title ID>/README.md` for platform limits. The frontend takes the newest
-version present, like the official CLI, but stops if it is not registered. Give
-`--package vNNN` to select another registered version actually in your folder.
+version present, like the official CLI. Registration is informational, not a
+version whitelist: other updates and the base game alone are passed to the
+official pipeline, which may derive a profile and omit build-specific fixes.
+Give `--package vNNN` to select a package actually in your folder.
 Update files without version tags follow the official scanner's inference;
 extracted NSO build IDs remain checked by the official pipeline. If required
 shader-source versions are absent or IDs differ, upstream may derive a profile
 and report untested inputs. Do not treat that warning as tested compatibility.
-Unknown games and other versions can still be attempted through the original
-CLI; they are not added to the frontend's supported list.
+Unknown games can still be surveyed through the original CLI. An unregistered
+version is never relabeled as tested or added to the registered build list.
 
 ## Command-line options
 

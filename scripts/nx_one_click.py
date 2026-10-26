@@ -55,12 +55,12 @@ def select_inputs(game_dir, package=None):
     builds = {key: {'display': value} for key, value in entry['builds'].items()}
     have = official.nsp_versions(family, builds)
     chosen = package or max(have, key=official.vnum)
-    if chosen not in entry['builds']:
-        raise ValueError('Selected version is not registered for ' + entry['name'] + '. Registered: ' +
-                         ', '.join(k + ' (' + v + ')' for k, v in entry['builds'].items()) +
-                         '. Use --package to select a registered version, or the official CLI for another version.')
     if chosen not in have:
         raise ValueError('The selected update is absent from the input folder: ' + chosen)
+    print('Detected package: ' + chosen + '; registered builds: ' +
+          ', '.join(k + ' (' + v + ')' for k, v in entry['builds'].items()), flush=True)
+    if chosen not in entry['builds']:
+        print('Note: this package is not registered. The official pipeline will derive a profile from its own files; registered-version fixes may not apply and gameplay is untested.', flush=True)
     missing = [v for v in entry['shader_versions'] if v not in have]
     # Like the official CLI, absent shader source versions can use a derived profile.
     if missing:
@@ -140,7 +140,7 @@ def main(argv=None):
     ap.add_argument('--game-dir', type=Path)
     ap.add_argument('--keys', type=Path)
     ap.add_argument('--output-dir', type=Path)
-    ap.add_argument('--package', help='registered version, e.g. v2228224')
+    ap.add_argument('--package', help='package present in the folder, e.g. v2228224 or v0')
     ap.add_argument('--language', default='en-US', help='same language codes as the official CLI')
     a = ap.parse_args(argv)
     if a.list_games:
@@ -191,7 +191,7 @@ def main(argv=None):
         partial = output / ('.' + target.name + '.partial.ipa')
         cmd = command(game_dir, keys, partial, chosen, a.language)
         env = clean_env()
-        print('Game: ' + entry['name'] + ' / ' + entry['builds'][chosen], flush=True)
+        print('Game: ' + entry['name'] + ' / ' + entry['builds'].get(chosen, chosen + ' (unregistered)'), flush=True)
         print('Log: ' + str(job / 'build.log'), flush=True)
         with (job / 'build.log').open('w') as log:
             with subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE,
@@ -202,7 +202,7 @@ def main(argv=None):
                     log.flush()
                 if proc.wait():
                     raise ValueError('Official build failed. Log and caches retained: ' + str(job))
-        info = verify_ipa(partial, entry, entry['builds'][chosen])
+        info = verify_ipa(partial, entry, entry['builds'].get(chosen))
         checksum = digest(partial)
         partial.rename(target)
         target.with_suffix('.ipa.sha256').write_text(checksum + '  ' + target.name + '\n')

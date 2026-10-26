@@ -34,13 +34,24 @@ class FrontendTests(unittest.TestCase):
     def family(self, update):
         return {'base':Path('base.nsp'), 'updates':[(update,Path('update.nsp'))], 'dlc':[]}
 
-    def test_select_registered_and_reject_other_version(self):
+    def test_select_registered_and_other_version(self):
         official = frontend.pipeline()
         with patch.object(official, 'scan_nsps', return_value=(int('01006F8002326000',16),self.family(2228224))), patch.object(frontend,'pipeline',return_value=official):
             entry, version, _ = frontend.select_inputs(Path('/tmp'))
             self.assertEqual(version,'v2228224')
         with patch.object(official,'scan_nsps',return_value=(int('01006F8002326000',16),self.family(9999999))), patch.object(frontend,'pipeline',return_value=official):
-            with self.assertRaises(ValueError): frontend.select_inputs(Path('/tmp'))
+            _, version, _ = frontend.select_inputs(Path('/tmp'))
+            self.assertEqual(version, 'v9999999')
+
+    def test_base_only_paper_mario_and_absent_explicit_package(self):
+        official = frontend.pipeline()
+        family = {'base': Path('base.nsp'), 'updates': [], 'dlc': []}
+        tid = next(int(k,16) for k,v in frontend.catalog().items() if v['name'] == 'Paper Mario: The Thousand-Year Door')
+        with patch.object(official, 'scan_nsps', return_value=(tid, family)), patch.object(frontend, 'pipeline', return_value=official):
+            _, version, _ = frontend.select_inputs(Path('/tmp'))
+            self.assertEqual(version, 'v0')
+            with self.assertRaisesRegex(ValueError, 'absent'):
+                frontend.select_inputs(Path('/tmp'), 'v65536')
 
     def test_upstream_command_keeps_spaces_and_embedding(self):
         cmd = frontend.command(Path('/my games/a'),Path('/my keys/prod.keys'),Path('/out/full.ipa'),'v0','zh-Hans')
