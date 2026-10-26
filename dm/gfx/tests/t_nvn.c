@@ -202,9 +202,11 @@ int main(void) {
     P(nvnQueueBuilderSetQueueMemory)(&qb, qmem, qsz);
     EXPECT("QueueInitialize succeeds", 1, P(nvnQueueInitialize)(&q, &qb));
     NVNcommandHandle hs[2] = {h1, h2};
+    uint64_t counter_before = now_ns();
     P(nvnQueueSubmitCommands)(&q, 2, hs);
     NVNsync sf; P(nvnSyncInitialize)(&sf, &dev); P(nvnQueueFenceSync)(&q, &sf, NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE, 0);
     int wr = P(nvnSyncWait)(&sf, 5000000000ull);
+    uint64_t counter_after = now_ns();
     EXPECT("fence wait after submit succeeds (0 or 1)", 1, wr == 0 || wr == 1);
     int ub_ok = 1;
     for (int k = 0; k < 20; k++) for (int i = 0; i < 16; i++) { uint32_t w; memcpy(&w, ub + k * 64 + i * 4, 4); ub_ok &= w == (uint32_t)(k * 100 + i); }
@@ -213,6 +215,11 @@ int main(void) {
     EXPECT("buffer copy 64 B identical", 0, memcmp(src, dst, 64));
     uint64_t ts[2]; memcpy(ts, cnt, 16);
     EXPECT("counter timestamp written (non-zero)", 1, ts[0] != 0 && ts[0] == ts[1]);
+    NVNcounterData fixed_counter = {0, 614400};
+    EXPECT("614400 raw counter ticks = 1 ms", 1000000, P(nvnDeviceGetTimestampInNanoseconds)(&dev, &fixed_counter));
+    NVNcounterData reported_counter; memcpy(&reported_counter, cnt, sizeof reported_counter);
+    uint64_t counter_ns = P(nvnDeviceGetTimestampInNanoseconds)(&dev, &reported_counter);
+    EXPECT("report converted to ns lies inside submit/wait", 1, counter_ns + 2 >= counter_before && counter_ns <= counter_after);
 
     // 5a. Command memory per recording, as GetCommandMemoryUsed reports it (games size prerecorded command blocks by it: Breath of the Wild records one scratch draw per mesh):
     //     no BEGIN record, a plain indexed draw without the indirect / multi-draw fields, and the handle is the first record; an indirect draw keeps its address

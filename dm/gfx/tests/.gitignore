@@ -9,6 +9,8 @@ t_deswz_gpu
 t_deswz_gpu.dSYM/
 t_builtin.dSYM/
 t_pace
+t_timestamp
+t_timestamp.dSYM/
 t_fstep
 .precommit.err
 .precommit_snap/
@@ -52,6 +54,8 @@ t_vbuf
 t_vbuf.dSYM/
 t_geometry
 t_geometry.dSYM/
+t_feedback
+t_feedback.dSYM/
 t_dirty_race
 t_dirty_race.dSYM/
 t_vin
@@ -70,6 +74,8 @@ t_readback
 t_readback.dSYM/
 t_linear_readback
 t_linear_readback.dSYM/
+t_copy_alias
+t_copy_alias.dSYM/
 t_pso_pending
 t_pso_pending.dSYM/
 t_integer_blend
@@ -88,3 +94,7 @@ t_pso_archive
 t_pso_archive.dSYM/
 t_pso_warm
 t_pso_warm.dSYM/
+t_depth16_clear
+t_depth16_clear.dSYM/
+t_tex_layout
+t_tex_layout.dSYM/

@@ -20,6 +20,14 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Fix:** the profile key `gpu_timestamps segment` makes each report take the GPU start (`TIMESTAMP_TOP`) or end (other types) of the `sub_cut` segment ([Submissions handed to the GPU in segments](#submissions-handed-to-the-gpu-in-segments)) it was encoded in (`rep_ticks` in `nvn_mtl.m`: MTL4CommitFeedback times converted to the guest clock, written in the last segment's handler as before). `DM_NVN_GPU_TS=submission` gives the old timestamps.
 - **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) (legacy frame-step method): BotW's frame has 5 reports in one submission (`main+0xe94584`, `main+0xe94664`); with two more cuts the controller always takes the GPU path, and the GPU time now reads the frame's GPU span, gaps where the GPU waits for the host's translation included. Measured on the Mac with two BotW runs sharing the GPU under a heavy CPU load (load average about 75, a shader rebuild running): GPU time p50 16–23 ms; the fixed run stayed at interval 2 (3 while the GPU time passed 1.9 vsyncs, 1 for under 2% of the frames) at 0.93–0.98 of real time, while a run with `DM_NVN_GPU_TS=submission` spent 10–70% of its frames at interval 1 and ran at 0.78–0.95. The same GPU time drives the game's dynamic resolution.
 
+### Raw NVN timestamp units
+
+- **Symptom:** GPU time reads 32 times too small when a game converts raw NVN counter timestamps itself.
+- **Cause:** the host wrote reports in 19.2 MHz CPU ticks, while the raw NVN timestamp field uses 614.4 MHz ticks (384 ticks per 625 ns). Games calling `nvnDeviceGetTimestampInNanoseconds` saw correct time because its inverse conversion had the same wrong rate, but an inline conversion read a 16 ms span as 0.5 ms.
+- **Fix:** `nvn_timestamp.h` shares the 614.4 MHz conversions between all report writes (`gpu_ticks`, `rep_ticks`) and `nvnDeviceGetTimestampInNanoseconds`. Wide integer products preserve long uptimes. The guest clock epoch stays the same; CPU system counters stay at 19.2 MHz, and the API still returns nanoseconds.
+- **Found on:** [NieR:Automata The End of YoRHa Edition](../../dm/games/010056B015FE8000/README.md), whose dynamic-resolution controller subtracts two raw report timestamps and converts the difference inline.
+- **Check:** `t_timestamp` checks known vectors, long uptimes, round-trip precision and the game's exact inline arithmetic. `t_nvn` checks the API's known units and bounds a completed report between submit and fence wait.
+
 ## Engine frame limiters
 
 ### A render-thread limiter with a constant and a fixed time step

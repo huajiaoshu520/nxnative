@@ -9,6 +9,67 @@ static int geo_cmp_index(const void *a, const void *b) {
     uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
     return (x > y) - (x < y);
 }
+enum { GEO_CAPTURE_VERTICES = (256u << 20) / (144 * 4) };
+// The capture span is already bounded by its scratch allocation. A bit per
+// vertex gives the same ascending unique list without sorting every reference.
+// Keep an in-place sort fallback for allocation failure or a wider caller.
+// order may be changed; a short destination is never partially written.
+static size_t geo_capture_unique(uint32_t *order, size_t count, int restart, uint32_t restart_index,
+                                 uint32_t lo, uint64_t span, uint32_t *dst, size_t capacity) {
+    if (!span || span > (uint64_t)UINT32_MAX + 1 - lo) return SIZE_MAX;
+    for (size_t i = 0; i < count; i++) if (!(restart && order[i] == restart_index) &&
+        (order[i] < lo || (uint64_t)order[i] - lo >= span)) return SIZE_MAX;
+    size_t nw = (size_t)((span + 63) / 64), n = 0;
+    uint64_t *bits = span <= GEO_CAPTURE_VERTICES ? calloc(nw, sizeof *bits) : NULL;
+    if (bits) {
+        for (size_t i = 0; i < count; i++) if (!(restart && order[i] == restart_index)) {
+            uint32_t v = order[i] - lo; bits[v >> 6] |= 1ull << (v & 63);
+        }
+        for (size_t i = 0; i < nw; i++) n += (size_t)__builtin_popcountll(bits[i]);
+        if (n <= capacity) for (size_t i = 0, k = 0; i < nw; i++) {
+            uint64_t word = bits[i];
+            while (word) { dst[k++] = lo + (uint32_t)(i * 64 + __builtin_ctzll(word)); word &= word - 1; }
+        }
+        free(bits);
+    } else {
+        size_t references = 0;
+        for (size_t i = 0; i < count; i++) if (!(restart && order[i] == restart_index)) order[references++] = order[i];
+        qsort(order, references, sizeof *order, geo_cmp_index);
+        for (size_t i = 0; i < references; i++) if (!i || order[i] != order[i - 1]) n++;
+        if (n <= capacity) for (size_t i = 0, k = 0; i < references; i++)
+            if (!i || order[i] != order[i - 1]) dst[k++] = order[i];
+    }
+    return n <= capacity ? n : SIZE_MAX;
+}
+// Only CPU reads need a completed snapshot. Native vertex capture stays on the
+// GPU and follows earlier writes through normal encoder ordering. Unknown or
+// overflowing write sets always retain the conservative drain.
+static int geo_cpu_hazard(uint64_t lo, uint64_t n) {
+    if (!n) return 0;
+    if (!lo || n > UINT64_MAX - lo || g_sbw_over) return 1;
+    return pend_hits(lo, n) || sbw_hits(lo, lo + n) || gw_live(lo, lo + n);
+}
+static int geo_conversion_hazard(NvShader *vs) {
+    for (int v = 0; v < vs->rf.nv; v++) {
+        int a = vs->rf.v[v].nvn;
+        if (a >= S.nattr || !vconv_wanted(&vs->rf, v, NULL, 0)) continue;
+        int st = S.attr[a].stream;
+        if (st < 16 && S.vbuf[st].address && geo_cpu_hazard(S.vbuf[st].address, S.vbuf[st].size)) return 1;
+    }
+    return 0;
+}
+// GS output -> counts -> offsets/indirect args -> packed indices stay in one
+// compute encoder. Each transition needs dispatch ordering and device-memory
+// visibility; full queue barriers remain at the encoder's boundaries.
+static void geo_pack_encode(id<MTL4ComputeCommandEncoder> ce, id<MTLComputePipelineState> __strong *pack, uint64_t job, uint32_t groups) {
+    enc_c_args(ce, job, 0);
+    for (int i = 0; i < 3; i++) {
+        [ce barrierAfterEncoderStages:MTLStageDispatch beforeEncoderStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];
+        enc_c_pso(ce, pack[i]);
+        NSUInteger threads = i == 1 ? MIN((NSUInteger)256, pack[i].maxTotalThreadsPerThreadgroup) : 64;
+        enc_c_dispatch(ce, i == 1 ? MTLSizeMake(1, 1, 1) : MTLSizeMake((groups + 63) / 64, 1, 1), MTLSizeMake(threads, 1, 1));
+    }
+}
 static id<MTLRenderPipelineState> geo_capture_pso(NvShader *vs) {
     pso_key k; static const uint32_t cf[8]; pso_key_fill(&k, vs, nil, cf, 0, 0, 1, 0); k.fsfn = GEO_MARK;
     id<MTLRenderPipelineState> ps = hm_get_id(&g_pso, &k);
@@ -31,6 +92,13 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0);
 // Returns 0 when the draw cannot be split (the caller reports it)
 enum { GEO_RUN_PRIMS = 4096 }; static const uint64_t GEO_RUN_SPAN = 64ull << 20;
 static int g_geo_split_depth;   // > 0 while geo_split draws its runs: they skip the GPU wait
+static int geo_sync_cpu(int *drained) {
+    if (*drained) return 1;
+    mdi_wait();
+    if (g_mdi_ev.signaledValue < g_mdi_v) return 0;
+    memset(g_vconv, 0, sizeof g_vconv); *drained = 1;
+    return 1;
+}
 static int geo_split(NvProg *pr, const p_draw *dw, const p_draw_idx *di, int count, int instances, uint32_t first_instance) {
     int prim = dw ? dw->prim : di->prim, per = prim == 0 ? 1 : prim == 1 ? 2 : prim == 4 ? 3 : prim == 10 ? 4 : prim == 12 ? 6 : 0;
     if (!per || (di && S.restart.on) || count / per < 1) return 0;
@@ -76,15 +144,13 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     p_draw dw = dw0 ? *dw0 : (p_draw){0}; p_draw_idx di = di0 ? *di0 : (p_draw_idx){0};
     if (di0 && (di.itype < 0 || di.itype > 2)) { MLOG("[RED] geometry index type %d is invalid", di.itype); return; }
     uint64_t ind = dw0 ? dw.ind : di.ind;
-    // Indirect records and GPU-written index data need a coherent CPU snapshot
-    // for primitive assembly. This is deliberately a correctness path; no such
-    // wait is added to ordinary VS/FS draws.
-    int wait = ind != 0 || di0 != NULL;  // CPU assembly must also see writes from earlier submissions.
-    for (int i = 0; i < 16; i++) if (S.vbuf[i].size && pend_hits(S.vbuf[i].address, S.vbuf[i].size)) wait = 1;
-    for (int i = 0; i < vs->rf.nv; i++) if (vconv_wanted(&vs->rf, i, NULL, 0)) wait = 1;
     if (defer_has_active()) defer_fallback();
     lc_land(); rp_flush(); rp_end(); ubd_land();
-    if (wait && !g_geo_split_depth) { mdi_wait(); if (g_mdi_ev.signaledValue < g_mdi_v) return; memset(g_vconv, 0, sizeof g_vconv); }
+    int drained = g_geo_split_depth != 0;
+    // Decode indirect arguments only after their CPU snapshot is safe. They
+    // select the index range checked below; no GPU work is encoded between the
+    // two checks, so a successful drain covers both and the converted streams.
+    if ((geo_conversion_hazard(vs) || (ind && geo_cpu_hazard(ind, dw0 ? 16 : 20))) && !geo_sync_cpu(&drained)) return;
     if (ind) {
         uint32_t a[5] = {0}; size_t n = dw0 ? 16 : 20;
         if (!nvn_host_readable(ind, n)) { MLOG("[RED] geometry indirect arguments are not readable"); return; }
@@ -101,6 +167,7 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     if (count <= 0 || instances < 0) return;
     if (!instances) instances = 1;
     if (topology < 0 || count > (1 << 22)) { MLOG("[RED] geometry primitive %d or count %d exceeds the assembly path", prim, count); return; }
+    if (di0 && geo_cpu_hazard(di.ibuf, (uint64_t)count << di.itype) && !geo_sync_cpu(&drained)) return;
     NSString *key = [[NSString stringWithUTF8String:base->key] substringToIndex:16];
     NvShader *gs = shader_get([key stringByAppendingFormat:@"_bg%d", topology], 2);
     NvShader *reader = shader_get([key stringByAppendingString:@"_bgv"], 0);
@@ -115,36 +182,36 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
         for (int i = 0; i < 3 && lib; i++) if (!(pack[i] = [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@(fn[i])] error:&e])) break;
         if (!pack[2]) { pack[0] = pack[1] = nil; MLOG("[RED] geometry index compaction: %s", e.localizedDescription.UTF8String); return; } }
 
-    uint32_t *order = malloc((size_t)count * 4), *unique = malloc((size_t)count * 4);
-    if (!order || !unique) { free(order); free(unique); MLOG("[RED] geometry index allocation failed"); return; }
+    uint32_t *order = malloc((size_t)count * 4);
+    if (!order) { MLOG("[RED] geometry index allocation failed"); return; }
     uint32_t lo = UINT32_MAX, hi = 0; size_t nu = 0;
     int restart = di0 && S.restart.on;
     int isz = di0 ? 1 << di.itype : 0;
     uint32_t restart_index = S.restart.index & (isz == 1 ? UINT8_MAX : isz == 2 ? UINT16_MAX : UINT32_MAX);
     if (di0 && (di.itype < 0 || di.itype > 2 || !nvn_host_readable(di.ibuf, (uint64_t)count * isz))) {
-        free(order); free(unique); MLOG("[RED] geometry index buffer is not readable"); return;
+        free(order); MLOG("[RED] geometry index buffer is not readable"); return;
     }
     for (int i = 0; i < count; i++) {
         uint32_t v = (uint32_t)i;
         if (di0) { v = 0; memcpy(&v, (const uint8_t *)(uintptr_t)di.ibuf + (size_t)i * isz, isz); }
         order[i] = v;
         if (restart && v == restart_index) continue;
-        lo = MIN(lo, v); hi = MAX(hi, v); unique[nu++] = v;
+        lo = MIN(lo, v); hi = MAX(hi, v); nu++;
     }
-    if (!nu) { free(order); free(unique); return; }
+    if (!nu) { free(order); return; }
     int64_t first = di0 ? (int64_t)lo + di.base_vertex : dw.first;
     uint64_t span = (uint64_t)hi - lo + 1;
-    if (first < 0 || first + span > (uint64_t)UINT32_MAX + 1) { free(order); free(unique); MLOG("[RED] geometry vertex range is outside 32-bit vertex IDs"); return; }
+    if (first < 0 || first + span > (uint64_t)UINT32_MAX + 1) { free(order); MLOG("[RED] geometry vertex range is outside 32-bit vertex IDs"); return; }
     // Normalize only after assembly, so a restart value cannot collide with a
     // normalized vertex number. Indexed captures use a sorted unique index list.
     size_t words = nvn_geo_assemble(prim, order, count, restart, restart_index, NULL, 0);
     int width = nvn_geo_width(topology);
     uint64_t np = words == SIZE_MAX ? 0 : words / width;
-    if (!np) { free(order); free(unique); return; }
+    if (!np) { free(order); return; }
     uint64_t groups = np * (uint64_t)instances * gs->geo_invocations;
-    if (groups > UINT32_MAX || span * (uint64_t)instances > (256ull << 20) / (144 * 4) ||
+    if (groups > UINT32_MAX || span * (uint64_t)instances > GEO_CAPTURE_VERTICES ||
         (uint64_t)first_instance + instances > (uint64_t)UINT32_MAX + 1) {
-        free(order); free(unique);
+        free(order);
         if (!geo_split(pr, dw0 ? &dw : NULL, dw0 ? NULL : &di, count, instances, first_instance)) MLOG("[RED] geometry draw exceeds the capture or invocation bound"); return;
     }
     uint64_t input_size = span * instances * 144 * 4;
@@ -153,7 +220,7 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     uint64_t packed_size = groups * gs->geo_vertices * (gs->geo_output == 7 ? 3 : gs->geo_output == 6 ? 2 : 1) * 4;
     uint64_t total = input_size + output_size + raw_size + packed_size + groups * 4 + words * 4 + nu * 4 + 4096;
     if (groups > UINT32_MAX || total > (256ull << 20) || np > UINT32_MAX) {
-        free(order); free(unique);
+        free(order);
         if (!geo_split(pr, dw0 ? &dw : NULL, dw0 ? NULL : &di, count, instances, first_instance)) MLOG("[RED] geometry draw needs %llu MiB of scratch, above the 256 MiB bound", (unsigned long long)(total >> 20)); return;
     }
     id<MTLBuffer> scratch; size_t off = arena_alloc((size_t)total, &scratch);
@@ -170,10 +237,9 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     if (used > total) MDIE("geometry scratch size accounting");
     nvn_geo_assemble(prim, order, count, restart, restart_index, pmap, words);
     for (size_t i = 0; i < words; i++) ((uint32_t *)pmap)[i] -= lo;
-    qsort(unique, nu, 4, geo_cmp_index);
-    size_t unique_count = 0;
-    for (size_t i = 0; i < nu; i++) if (!i || unique[i] != unique[i - 1]) ((uint32_t *)pcapture_ix)[unique_count++] = unique[i];
-    free(order); free(unique);
+    size_t unique_count = di0 ? geo_capture_unique(order, count, restart, restart_index, lo, span, pcapture_ix, nu) : 0;
+    free(order);
+    if (unique_count == SIZE_MAX) { MLOG("[RED] geometry capture indices exceed their range or allocation"); return; }
     uint32_t vi[8] = {(uint32_t)span, (uint32_t)instances, 0, 0, (uint32_t)np, 0, 0, 0}; memcpy(pinfo, vi, 32);
     uint64_t ci[2] = {input, 0}; memcpy(pcapture_info, ci, 16);
     uint32_t cc[4] = {(uint32_t)first, (uint32_t)span, first_instance, (uint32_t)instances}; memcpy((uint8_t *)pcapture_info + 16, cc, 16);
@@ -192,11 +258,8 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     g_geo_bind[0] = input; g_geo_bind[1] = output; g_geo_bind[2] = raw; g_geo_bind[3] = info; g_geo_bind[4] = map;
     id<MTL4ComputeCommandEncoder> ce = enc_c_begin(NULL);
     args_dirty_all(); encode_args(ce, gs, 2, 0); enc_c_pso(ce, gs->geo_pso);
-    enc_c_dispatch(ce, MTLSizeMake((np + 31) / 32, instances, gs->geo_invocations), MTLSizeMake(32, 1, 1)); enc_c_end(ce);
-    for (int i = 0; i < 3; i++) {   // count per group, offsets (one thread), write per group: each waits for the one before
-        ce = enc_c_begin(NULL); enc_c_pso(ce, pack[i]); enc_c_args(ce, job, 0);
-        enc_c_dispatch(ce, i == 1 ? MTLSizeMake(1, 1, 1) : MTLSizeMake((groups + 63) / 64, 1, 1), MTLSizeMake(i == 1 ? 1 : 64, 1, 1)); enc_c_end(ce);
-    }
+    enc_c_dispatch(ce, MTLSizeMake((np + 31) / 32, instances, gs->geo_invocations), MTLSizeMake(32, 1, 1));
+    geo_pack_encode(ce, pack, job, (uint32_t)groups); enc_c_end(ce);
     args_dirty_all(); g_enc_pso = nil; g_enc_dss = nil; g_ed.ok = 0;
     swrite_note(pr); udc_note_draw(pr); g_wr_epoch++; g_mdx_epoch++;
     if (S.rast_discard) return;

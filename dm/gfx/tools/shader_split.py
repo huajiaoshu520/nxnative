@@ -29,6 +29,7 @@
 #   · PKZ (PlatinumGames, Bayonetta 3): shader objects (VSO / PSO / CSO / HSO / DSO, a control section and a code area each) in the DAT archives of the PKZ entries (Oodle Kraken, decoded by the
 #       game's own decoder in the Mac host), see pkz_entries, pgdat_members and pg_shader
 #   · CPK (CRI's file system, Bayonetta 2): BNSH files ('.vso' / '.pso') in the PlatinumGames DAT archives of the CPK entries (CRILAYLA entries, cpk.py), see cpk_jobs
+#       NieR:Automata's DAT members instead prefix length-delimited NVN code and control sections with a binding table (pg_sized_shader)
 #   · HNSHV002 (Needle, Persona 5 Royal): NVN section descriptors in the shader containers embedded in main and the GSC files of its CPK archives, see needle_shaders
 #   · GFPAK (Game Freak, Pokémon Sword): BNSH entries of the archives under bin/archive (LZ4 entries), see gfpak_members
 #   · .tfxo (Silicon Studio's YEBIS post effects, Pokémon Sword): control sections each followed by its code area, in a zlib stream in main, see tfxo_streams and tfxo_shaders
@@ -524,6 +525,25 @@ def pg_shader(d, label):
     ctl, code = d[octl:octl + nctl], d[ocode:ocode + ncode]
     why = check(label, st, ctl, code)
     if not why and st != 'cs' and sph_stage(code) != st: why = f'the SPH stage {sph_stage(code)} does not match the object\'s magic'
+    if why: red(f'{label} ({st}): {why}')
+    return [(f'{label}#PGSO', st, ctl, code)]
+
+def pg_sized_shader(d, label):
+    """PlatinumGames' binding-table form: u32 prefix length (including itself), bindings, u32 code length, code, u32 control length, control. NieR:Automata's 1,371 objects in five DATs
+    all have a 0x88-byte prefix and 0x880 control bytes; keys match the objects passed to NVN at boot. Recognize the section boundaries and NVN magics, without relying on a title or filename."""
+    if len(d) < 12: return []
+    prefix = struct.unpack_from('<I', d)[0]
+    if prefix < 4 or prefix & 3 or prefix + 8 > len(d): return []
+    ncode = struct.unpack_from('<I', d, prefix)[0]
+    codeoff, ctlsize = prefix + 4, prefix + 4 + ncode
+    if ncode < 0x80 or ctlsize + 4 > len(d) or d[codeoff:codeoff + 4] not in (GFX_MAGIC, CS_MAGIC): return []
+    nctl = struct.unpack_from('<I', d, ctlsize)[0]
+    ctloff = ctlsize + 4
+    if nctl < 0x760 or ctloff + nctl != len(d) or d[ctloff:ctloff + 4] != CTL_MAGIC: return []
+    ctl, code = d[ctloff:], d[codeoff:ctlsize]
+    st = 'cs' if code[:4] == CS_MAGIC else sph_stage(code)
+    if st is None: red(f'{label}: binding-table shader has an unknown SPH stage')
+    why = check(label, st, ctl, code)
     if why: red(f'{label} ({st}): {why}')
     return [(f'{label}#PGSO', st, ctl, code)]
 
@@ -1526,6 +1546,7 @@ def scan_blob(d, label, out):
         for nm, m in mem: scan_blob(m, f'{label}/{nm}', out)
         return
     if d[:4] in PG_STAGES and len(d) >= 0x18 and d[(o := struct.unpack_from('<I', d, 0xc)[0]):o + 4] == CTL_MAGIC: out.extend(pg_shader(d, label)); return
+    if shaders := pg_sized_shader(d, label): out.extend(shaders); return
     for m in re.finditer(b'BNSH\0\0\0\0', d):
         size = struct.unpack_from('<I', d, m.start() + 0x1c)[0]
         if m.start() + size <= len(d) and d[m.start() + 0x60:m.start() + 0x64] == b'grsc': out.extend(bnsh_shaders(d, m.start(), label))
