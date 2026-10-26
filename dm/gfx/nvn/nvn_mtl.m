@@ -1713,8 +1713,8 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     }
     // Fields NVN takes that Metal refuses: Metal aborts the process on them (-[MTLTextureDescriptorInternal validateWithDevice:]). An array or 3D texture of no layers gets one; one of
     // more than 2048 is not made. More levels than the size holds (on NVN the extra ones are 1x1; a mod's 1x1 texture declaring 9, MacNativeGames f864eb0): made with the levels the
-    // size holds, and copies to the others are skipped (tex_level_ok). A sample count the GPU lacks (Apple GPUs have 2 and 4; NVN also 8 and 16): the largest it has below, which
-    // the pipelines follow (their sample count is the attachments'); a multisample texture of one sample has no Metal form and is not made
+    // size holds, and copies to the others are skipped (tex_level_ok). A multisample texture of a sample count the GPU lacks (Apple GPUs have 2 and 4; NVN also 8 and 16), or of
+    // one sample, has no Metal form and is not made, as a texture past Metal's size limits (fewer samples would leave shaders that read sample 4 or higher reading past the texture)
     if (d.depth < 1) d.depth = 1;
     if (d.arrayLength < 1) d.arrayLength = 1;
     if (d.arrayLength > 2048) { RED_ONCE(113, "texture of %lu layers exceeds Metal's 2048: not made (format %#x target %d, first case ser=%llu)", (unsigned long)d.arrayLength, t->d.format, t->d.target, (unsigned long long)t->serial); return nil; }
@@ -1727,12 +1727,10 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
         d.mipmapLevelCount = fit;
     }
     if (d.textureType == MTLTextureType2DMultisample || d.textureType == MTLTextureType2DMultisampleArray) {
-        NSUInteger want = d.sampleCount, s = want;
-        while (s > 1 && ![g_dev supportsTextureSampleCount:s]) s--;
-        if (s != want) RED_ONCE(115, "multisample texture of %lu samples: this GPU has %lu at most below it%s (format %#x, first case ser=%llu)", (unsigned long)want, (unsigned long)s,
-                                s < 2 ? ", not made" : ", made with them", t->d.format, (unsigned long long)t->serial);
-        if (s < 2) return nil;
-        d.sampleCount = s;
+        if (d.sampleCount < 2 || ![g_dev supportsTextureSampleCount:d.sampleCount]) {
+            RED_ONCE(115, "multisample texture of %lu samples: this GPU has no such texture, not made (format %#x, first case ser=%llu)", (unsigned long)d.sampleCount, t->d.format, (unsigned long long)t->serial);
+            return nil;
+        }
     }
     d.storageMode = MTLStorageModePrivate;   // Render targets and assets both go in GPU private storage (lossless compression available)
     d.usage = MTLTextureUsageShaderRead | (fmt_compressed(t->d.format) || packaged ? 0 : MTLTextureUsageRenderTarget)
@@ -4891,7 +4889,8 @@ static NSSet<NSString *> *ga_list(void) {
 }
 // A compile the serializer captures, with g_arch_rw held shared: the first one after a flush notes the folder it made
 static id<MTLRenderPipelineState> ga_capture(MTL4RenderPipelineDescriptor *d, MTL4CompilerTaskOptions *o, NSError **e) {
-    if (o.lookupArchives.count) atomic_store(&g_ga_recap, 1);
+    // A recapture through lookup archives makes no folder at its compile (the flush makes it, ga_flushed): it takes none, or it could take another program's made meanwhile
+    if (o.lookupArchives.count) { atomic_store(&g_ga_recap, 1); return [g_comp4 newRenderPipelineStateWithDescriptor:d compilerTaskOptions:o error:e]; }
     // other compiles do not wait for the one that looks: theirs land in the same folder (at worst one made before its first listing, so none is taken and the folder stays)
     if (!g_ser4 || atomic_load(&g_ga_seen) || pthread_mutex_trylock(&g_ga_mu)) return [g_comp4 newRenderPipelineStateWithDescriptor:d compilerTaskOptions:o error:e];
     if (atomic_load(&g_ga_seen)) { pthread_mutex_unlock(&g_ga_mu); return [g_comp4 newRenderPipelineStateWithDescriptor:d compilerTaskOptions:o error:e]; }
@@ -4899,7 +4898,7 @@ static id<MTLRenderPipelineState> ga_capture(MTL4RenderPipelineDescriptor *d, MT
     id<MTLRenderPipelineState> ps = [g_comp4 newRenderPipelineStateWithDescriptor:d compilerTaskOptions:o error:e];
     if (ps) {   // a failed compile may have captured nothing: the next capture looks again
         NSMutableSet<NSString *> *made = [ga_list() mutableCopy]; [made minusSet:before];
-        if (made.count == 1) g_ga_mine = made.anyObject;   // none: a recapture through lookup archives, whose folder the flush makes (ga_flushed)
+        if (made.count == 1) g_ga_mine = made.anyObject;
         else if (made.count > 1 && atomic_fetch_add(&g_ga_said, 1) < 4) MLOG("pipeline archive: %lu new Metal build folders during the first capture since the last flush: none is removed", (unsigned long)made.count);
         atomic_store(&g_ga_seen, 1);
     }
