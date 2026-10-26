@@ -153,3 +153,7 @@ for profile markers, shader layout, bundle metadata or signatures. Resource and
 build validation belong to the official tools. A failed official build preserves
 its logs and caches; a successful output is published before success-only cleanup.
 The game folder, prod.keys file and output folder pickers are unchanged.
+
+After publishing an IPA, the frontend also removes that build's `.idx` and
+`.idx.partial` packer indexes beside the temporary IPA. Other outputs and indexes
+are left untouched; failed builds retain their indexes for retrying.

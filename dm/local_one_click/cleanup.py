@@ -69,3 +69,17 @@ def cleanup_success(game_dir, prepared_dir, title_id, ipa, keys):
     else:
         print('Build caches, generated NSP copies, logs and private dependency environment removed. Original game packages, keys and finished app/package retained.', flush=True)
     return removed, retained
+
+
+def cleanup_output_index(partial, published):
+    """Remove only this successful IPA build's official packer index sidecars."""
+    partial, published = Path(partial), Path(published)
+    if partial == published or not published.is_file():
+        raise ValueError('Cannot remove output indexes before publishing the IPA.')
+    for suffix in ('.idx', '.idx.partial'):
+        path = Path(str(partial) + suffix)
+        if path.is_file() or path.is_symlink():
+            try:
+                path.unlink()
+            except OSError as error:
+                print('Output completed; could not remove packer index: ' + str(path) + ': ' + str(error), flush=True)

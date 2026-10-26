@@ -63,6 +63,32 @@ class FrontendTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), b'official output fixture')
             self.assertFalse(partial.exists())
 
+    def test_publish_cleans_only_its_own_packer_indexes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            partial, target = root / '.build.partial.ipa', root / 'finished.ipa'
+            partial.write_bytes(b'official output')
+            indexes = [Path(str(partial) + suffix) for suffix in ('.idx', '.idx.partial')]
+            for index in indexes: index.write_bytes(b'cache')
+            unrelated = root / 'other.ipa.idx'
+            unrelated.write_bytes(b'keep')
+            frontend.publish_output(partial, target)
+            self.assertTrue(target.is_file())
+            self.assertTrue(all(not p.exists() for p in indexes))
+            self.assertEqual(unrelated.read_bytes(), b'keep')
+
+    def test_failed_publication_preserves_packer_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            partial, target = root / '.build.partial.ipa', root / 'finished.ipa'
+            partial.write_bytes(b'new')
+            target.write_bytes(b'previous')
+            index = Path(str(partial) + '.idx')
+            index.write_bytes(b'retry cache')
+            with self.assertRaises(ValueError):
+                frontend.publish_output(partial, target)
+            self.assertEqual(index.read_bytes(), b'retry cache')
+
     def test_missing_output_and_existing_target_are_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

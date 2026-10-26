@@ -101,6 +101,9 @@ def publish_output(partial, target, mac=False):
     if target.exists():
         raise ValueError('Output already exists; not overwriting: ' + str(target))
     partial.rename(target)
+    if not mac:
+        from cleanup import cleanup_output_index
+        cleanup_output_index(partial, target)
 
 
 def main(argv=None):
