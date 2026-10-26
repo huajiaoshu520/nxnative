@@ -91,6 +91,24 @@ class FrontendTests(unittest.TestCase):
                 self.assertIn(expected, result.stdout)
                 self.assertIn('prod.keys', result.stdout)
 
+    @unittest.skipUnless(platform.system() == 'Darwin', 'AppKit requires macOS')
+    def test_key_picker_disables_other_files_and_allows_folder_navigation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ('prod.keys', 'title.keys', 'other.nsp'):
+                (root / name).touch()
+            directory = root / 'keys'
+            directory.mkdir()
+            result = subprocess.run(['xcrun', 'swift', str(ROOT / 'dm/local_one_click/choose_keys.swift'), '--test-filter', str(root / 'prod.keys'), str(root / 'title.keys'), str(root / 'other.nsp'), str(directory)], capture_output=True, text=True, check=True)
+            rows = json.loads(result.stdout)
+            self.assertEqual([(r['enabled'], r['valid']) for r in rows], [(True, True), (False, False), (False, False), (True, False)])
+
+    def test_keys_use_native_filtered_picker(self):
+        response = subprocess.CompletedProcess([], 0, '/tmp/prod.keys\n', '')
+        with patch.object(frontend.subprocess, 'run', return_value=response) as run:
+            frontend.pick('keys')
+        self.assertEqual(run.call_args.args[0][:2], ['xcrun', 'swift'])
+
     def test_picker_preserves_actual_error(self):
         response = subprocess.CompletedProcess([], 1, '', 'execution error: fixture (-10006)')
         with patch.object(frontend.subprocess, 'run', return_value=response):

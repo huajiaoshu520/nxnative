@@ -70,11 +70,14 @@ def select_inputs(game_dir, package=None):
 
 
 def pick(kind):
-    response = subprocess.run(['osascript', str(ROOT / 'dm/local_one_click/choose_inputs.applescript'), kind],
-                              text=True, capture_output=True)
+    if kind == 'keys':
+        args = ['xcrun', 'swift', str(ROOT / 'dm/local_one_click/choose_keys.swift')]
+    else:
+        args = ['osascript', str(ROOT / 'dm/local_one_click/choose_inputs.applescript'), kind]
+    response = subprocess.run(args, text=True, capture_output=True)
     if response.returncode:
         detail = response.stderr.strip()
-        if '(-128)' in detail:
+        if response.returncode == 130 or '(-128)' in detail:
             raise ValueError('Selection cancelled. No build started.')
         raise ValueError('Cannot open the selection window: ' + (detail or str(response.returncode)))
     return Path(response.stdout.strip()).expanduser().resolve()

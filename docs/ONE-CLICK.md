@@ -8,6 +8,9 @@ Silicon Mac, install and open full Xcode and accept its license first. Double-cl
 2. Your own `prod.keys` file.
 3. The folder for the resulting unsigned IPA.
 
+The key picker enables only `prod.keys`; `title.keys` and other files are
+disabled. Folders can be opened for navigation but cannot be selected as keys.
+
 The three picker prompts follow macOS preferred languages: Simplified Chinese,
 Traditional Chinese, or English (fallback for other languages). This only changes
 the picker text, not the game language; use `--language` for the game.
