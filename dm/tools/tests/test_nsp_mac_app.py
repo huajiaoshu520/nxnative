@@ -5,6 +5,7 @@ No game files, keys or Xcode needed: a stand-in host compiled here records what 
 import contextlib
 import importlib.util
 import io
+import os
 from pathlib import Path
 import plistlib
 import shutil
@@ -43,6 +44,45 @@ int main(int argc, char **argv) {
 '''
 
 
+class Copy(unittest.TestCase):
+    def test_argument_budget(self):
+        # A small exec limit exercises long, multibyte paths and a large inherited environment without thousands of files.
+        srcs = [Path('/shader build') / ('\u00e9' * 80) / f'{i}_b.metallib' for i in range(100)]
+        dst = Path('/Game.app/Contents/Resources/msl/b-0123456789ab')
+        env = {'PACK_APP_TEST': 'x' * 4096}
+        for clone in (False, True):
+            with self.subTest(clone=clone), mock.patch.dict(os.environ, env, clear=True), mock.patch.object(os, 'sysconf', return_value=8192), mock.patch.object(pack_app, 'run') as run:
+                pack_app.copy(iter(srcs), dst, clone)
+                self.assertGreater(run.call_count, 1)
+                copied = []
+                flags = ['/bin/cp', '-R'] + (['-c'] if clone else [])
+                for call in run.call_args_list:
+                    cmd = call.args[0]
+                    self.assertEqual(cmd[:len(flags)], flags); self.assertEqual(cmd[-1], dst)
+                    copied.extend(cmd[len(flags):-1])
+                    size = sum(len(os.fsencode(p)) + 1 for p in cmd) + sum(len(os.fsencode(f'{k}={v}')) + 1 for k, v in env.items())
+                    self.assertLess(size, 8192)
+                self.assertEqual(copied, srcs)
+
+    def test_no_room_for_source(self):
+        with mock.patch.object(os, 'sysconf', return_value=4096), mock.patch.dict(os.environ, {'PACK_APP_TEST': 'x' * 4096}, clear=True), mock.patch.object(pack_app, 'run') as run:
+            with self.assertRaisesRegex(SystemExit, 'copy arguments exceed ARG_MAX'):
+                pack_app.copy([Path('/source.metallib')], Path('/out'), False)
+            run.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'exercises the macOS exec limit')
+    def test_long_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / ('a' * 200) / ('b' * 200) / ('c' * 200); src.mkdir(parents=True)
+            dst = Path(tmp) / 'out'; dst.mkdir()
+            files = [src / f'{i:04d}_b.metallib' for i in range(2000)]
+            for p in files: p.write_bytes(p.name.encode())
+            self.assertGreater(sum(len(os.fsencode(p)) + 1 for p in files), os.sysconf('SC_ARG_MAX'))
+            pack_app.copy(files, dst, False)
+            self.assertEqual(sorted(p.name for p in dst.iterdir()), [p.name for p in files])
+            for p in files: self.assertEqual((dst / p.name).read_bytes(), p.name.encode())
+
+
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('codesign'), 'needs macOS (clang, codesign, sips, iconutil)')
 class App(unittest.TestCase):
     @classmethod
@@ -56,6 +96,7 @@ class App(unittest.TestCase):
             (t / 'patched' / n).write_bytes(b)
         (t / 'romfs/region_common/audio/edward.bfsar').write_bytes(b'snd')
         (t / 'cache/b-0123456789ab/k_b.metallib').write_bytes(b'lib'); (t / 'cache/b-0123456789ab/inputs.tsv').write_text('# stamp\n')
+        (t / 'cache/b-0123456789ab/k_b.json').write_text('{}'); (t / 'cache/b-0123456789ab/k_b.metal').write_text('msl'); (t / 'cache/b-0123456789ab/_b_build.json').write_text('[]')
         (t / 'cache/cas').mkdir()   # the Metal compile cache: not for the app
         for n in ('shader_map.tsv', 'pso_manifest.tsv', 'c1_full.tsv', 'game.tsv'): (t / 'profile' / n).write_text(n)
         (t / 'font/nintendo_ext.ttf').write_bytes(b'ttf')
@@ -95,6 +136,7 @@ class App(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (c / 'Resources/dm').iterdir()),
                          ['c1_full.tsv', 'env.txt', 'font', 'main.cuts.tsv', 'main.fixups.tsv', 'main.gates.tsv', 'main.obs.tsv', 'main.patched.bin', 'pso_manifest.tsv', 'shader_map.tsv'])
         self.assertEqual([p.name for p in (c / 'Resources/msl').iterdir()], ['b-0123456789ab'])   # the libraries only, not the compile cache
+        self.assertEqual(sorted(p.name for p in (c / 'Resources/msl/b-0123456789ab').iterdir()), ['inputs.tsv', 'k_b.json', 'k_b.metallib'])
         self.assertEqual((c / 'Resources/msl/b-0123456789ab/k_b.metallib').read_bytes(), b'lib')
         self.assertTrue((c / 'Resources/romfs/region_common/audio/edward.bfsar').is_file())
         self.assertTrue((c / 'Resources/aoc/1/x').is_file()); self.assertTrue((c / 'Resources/dm/font/nintendo_ext.ttf').is_file())

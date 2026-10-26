@@ -37,9 +37,12 @@ jobs:
         run: |
           mkdir -p logs
           make -C dm/host/tests GAME="$GAME" -j3 run 2>&1 | tee logs/host-tests.log
-      - name: ThreadSanitizer (audio and guest memory)
+      - name: ThreadSanitizer (audio, HID and guest memory)
         run: |
           make -C dm/host/tests GAME="$GAME" -j3 tsan memory-tsan 2>&1 | tee logs/tsan.log
+      - name: Thermal cap and ThreadSanitizer (concurrent frame-cap readers)
+        run: |
+          make -C dm/gfx/tests GAME="$GAME" -j3 check_t_thermal thermal-tsan 2>&1 | tee logs/thermal.log
       - name: CPU texture layout and deswizzle tests
         run: |
           make -C dm/gfx/tex/tests t_tex 2>&1 | tee logs/texture-build.log
@@ -48,7 +51,10 @@ jobs:
         run: |
           mkdir -p logs
           cd dm/gfx/tests
-          tests="t_dirty_slots t_dirty_race t_tex_layout t_pace t_fstep t_hmap t_cover t_pso_skey t_refl t_rt_range_ro t_present_rescue"
+          make GAME="$GAME" -j3 t_perf_order
+          ./t_perf_order --cpu 2>&1 | tee ../../../logs/t_perf_order.log
+          make GAME="$GAME" -j3 perf-order-tsan 2>&1 | tee ../../../logs/t_perf_order-tsan.log
+          tests="t_dirty_slots t_dirty_race t_tex_layout t_pace t_fstep t_hmap t_cover t_pso_skey t_refl t_rt_range_ro t_present_rescue t_gpuprof"
           make GAME="$GAME" -j3 $tests 2>&1 | tee ../../../logs/gfx-build.log
           failed=0
           for t in $tests; do

@@ -40,6 +40,8 @@ Each found by one boot ([Hardware Opus decoders built on the SDK's software deco
 
 - The game reads a USB mouse and no touch screen, as OCTOPATH TRAVELER 0 and Tears of the Kingdom do; a rule that turns touches into a mouse would need testing on it ([ROMANCE OF THE THREE KINGDOMS 8 REMAKE](../0100C2A01A730000/README.md)).
 
+- Rumble: `main` sends each player's vibration every frame (two `hid::SendVibrationValue` calls per player; Asian release `main` `9c3116f0…` at `+0x5ead8c`) from fields of its pad object that only the pad reset writes (amplitude 0, 160 / 320 Hz), so that path never vibrates. CRI's audio-driven vibration (`hid::VibrationConverter`, behind the sound renderer type 6 that CRI registers at startup, `+0x790b60`) never opened in the opening scene nor in a battle on the Mac. The game has no rumble: on the Switch it does not vibrate either. With a DualSense its (zero) values reach the controller since [Vibration handles before a controller is reported](../../../docs/reference/services.md#vibration-handles-before-a-controller-is-reported).
+
 ## Mac routes
 
 - `DM_KEYS=f2400:A*20/300` goes from the title screen (about frame 2,500) through a new game into the opening story scene (about frame 4,900).
@@ -50,6 +52,7 @@ General host changes first needed here; each applies to every game:
 
 - `alloc_big_align` was first needed on 13 Sentinels ([its note](../01003FC01670C000/README.md#memory), [the profile keys](../README.md#keys)).
 - **The hardware multi-stream Opus decoder's C interface** forwarded to the SDK's software decoder (`hle_codec.c`) and **`GenerateCryptographicallyRandomBytes` under the `sdk`'s own `getentropy`** (`HLE_FORCE`, `hle_os.c`): [Hardware Opus decoders built on the SDK's software decoders](../../../docs/reference/audio.md#hardware-opus-decoders-built-on-the-sdks-software-decoders), [Cryptographically random bytes](../../../docs/reference/services.md#cryptographically-random-bytes).
+- **Vibration handles answered before a controller's haptics are routed** (`hle_hid.c`): the game asks for them once at startup, before GameController reports the pad, and every value went to handle 0 (seen in the log; the game has no rumble, so nothing changed in play) ([Vibration handles before a controller is reported](../../../docs/reference/services.md#vibration-handles-before-a-controller-is-reported)).
 
 ## Open
 

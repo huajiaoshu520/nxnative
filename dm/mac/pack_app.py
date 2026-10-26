@@ -13,6 +13,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 MODULE_FILES = ('*.patched.bin', '*.fixups.tsv', '*.gates.tsv', '*.cuts.tsv', '*.obs.tsv', 'nro.tsv')   # what the host reads from the module folder (build_ipa.sh copies the same tables)
+MSL_FILES = ('*.metallib', '*.json', '*.tsv')   # what the host reads from msl/ (not the Mac build's .metal sources or _b_build.json)
 TABLES = ('shader_map.tsv', 'pso_manifest.tsv', 'c1_full.tsv', 'cb_extent.tsv')   # read beside DM_NVN_SHMAP; any of them may be absent (a Vulkan or GL game has no c1_full.tsv)
 EXE = 'nxnative'   # the launcher's file name (Contents/MacOS/nxnative)
 ICON_SIZES = (16, 32, 128, 256, 512)
@@ -48,8 +49,21 @@ def tree_bytes(d):
     return sum((Path(r) / f).stat().st_size for r, _, fs in os.walk(d) for f in fs)
 
 
-def copy(srcs, dst, clone):   # cp -R of each source to dst (a new path for one folder, an existing folder for files); -c clones
-    run(['/bin/cp', '-R'] + (['-c'] if clone else []) + list(srcs) + [dst])
+def copy(srcs, dst, clone):   # cp -R of each source to dst (a new path for one folder, an existing folder for files); -c clones (batched under ARG_MAX)
+    cmd = ['/bin/cp', '-R'] + (['-c'] if clone else [])
+    pointer = ctypes.sizeof(ctypes.c_void_p)
+    def arg_bytes(p): return len(os.fsencode(p)) + 1 + pointer
+    # exec's limit includes encoded strings, NULs and argv/envp pointers. Reserve 2 KiB for alignment and platform overhead (as POSIX xargs does).
+    env_bytes = sum(arg_bytes(f'{k}={v}') for k, v in os.environ.items()) + pointer
+    budget = os.sysconf('SC_ARG_MAX') - env_bytes - sum(arg_bytes(p) for p in cmd + [dst]) - pointer - 2048
+    batch, used = [], 0
+    for src in srcs:
+        size = arg_bytes(src)
+        if size > budget: raise SystemExit(f'copy arguments exceed ARG_MAX for {src}')
+        if batch and used + size > budget:
+            run(cmd + batch + [dst]); batch, used = [], 0
+        batch.append(src); used += size
+    if batch: run(cmd + batch + [dst])
 
 
 def min_os(host):   # the host's deployment target (LC_BUILD_VERSION minos): the launcher is built for the same and Info.plist says it
@@ -97,11 +111,12 @@ def pack(a):
     for d in (mac, dm / 'font'): d.mkdir(parents=True)
     romfs, msl, aoc = Path(a.romfs), Path(a.msl), Path(a.aoc) if a.aoc else None
     if a.marker and not (romfs / a.marker).exists(): raise SystemExit(f'no RomFS at {romfs} (missing {a.marker})')
-    if not msl.is_dir(): raise SystemExit(f'no shader libraries at {msl}')
+    msls = sorted(p for pat in MSL_FILES for p in msl.glob(pat) if p.is_file() and p.name != '_b_build.json') if msl.is_dir() else []
+    if not any(p.suffix == '.metallib' for p in msls): raise SystemExit(f'no shader libraries at {msl}')
     clone = can_clone(romfs, res)
-    big = [romfs, msl] + ([aoc] if aoc else [])
     if not clone:
-        need, free = sum(tree_bytes(d) for d in big), shutil.disk_usage(res).free
+        need = sum(tree_bytes(d) for d in [romfs] + ([aoc] if aoc else [])) + sum(p.stat().st_size for p in msls)
+        free = shutil.disk_usage(res).free
         if need + (1 << 30) > free: raise SystemExit(f'the app needs {need / 2**30:.1f} GB on the volume of {out.parent} (no APFS clones from the build there) and {free / 2**30:.1f} GB are free')
     step(f'launcher and host ({"clones" if clone else "copies"} of the game files)')
     minos = min_os(a.host)
@@ -118,7 +133,7 @@ def pack(a):
     fonts = sorted(Path(a.font).glob('*.ttf'))
     if fonts: copy(fonts, dm / 'font', False)
     if a.env_file: shutil.copyfile(a.env_file, dm / 'env.txt')
-    step('shader libraries'); (res / 'msl').mkdir(); copy([msl], res / 'msl' / (a.msl_name or msl.name), clone)
+    step('shader libraries'); msl_dst = res / 'msl' / (a.msl_name or msl.name); msl_dst.mkdir(parents=True); copy(msls, msl_dst, clone)
     if aoc: step('add-on content'); copy([aoc], res / 'aoc', clone)
     step('game files'); copy([romfs], res / 'romfs', clone)
     icon = bool(a.icon and Path(a.icon).is_file())

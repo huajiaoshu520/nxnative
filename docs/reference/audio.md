@@ -8,11 +8,12 @@ The audio renderer (`dm/host/hle_audren.c`), AudioOut, audio devices and codecs.
 
 Check whether the SDK carries the renderer: list the `sdk` module's exports for `nn::audio::server::` and `nn::audio::dsp::CommandListProcessor`. If they are there ([Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md), SDK 16), do not write a mixer:
 
-- switch `AudioRendererParameter` to rendering device = CPU (+0x2c = 1) and execution mode = manual (+0x30 = 1) in `GetAudioRendererWorkBufferSize` and both `OpenAudioRenderer` overloads;
+- switch a copy of `AudioRendererParameter` to rendering device = CPU (+0x2c = 1) and execution mode = manual (+0x30 = 1) in `GetAudioRendererWorkBufferSize` and both `OpenAudioRenderer` overloads;
 - call the SDK originals (`guest_sym` returns the module's own code even for a forced symbol);
 - drive `ExecuteAudioRendererRendering` from a guest thread (`dm_guest_thread_spawn`).
 
 The open then goes through `CreateAudioRendererManagerByDfc`; no IPC.
+For a replaced DSP renderer the size query keeps the service's work-buffer contract; a larger local CPU representation is a backend cost. See [A sound engine's heap too small for its renderer and players](#a-sound-engines-heap-too-small-for-its-renderer-and-players).
 
 ### SDK 8's longer `AudioRendererParameter`
 
@@ -62,10 +63,10 @@ The open then goes through `CreateAudioRendererManagerByDfc`; no IPC.
 ### A sound engine's heap too small for its renderer and players
 
 - **Symptom:** the main thread spins at start-up in a resource wait (a `YieldThread` loop, no crash), right after `OpenAudioRenderer`.
-- **Cause:** Koei Tecmo's sound engine (KTSL) failed its setup quietly. The init hands it three heaps cut from one block (15 MB engine memory, 2 MB, 142 MB sound data; the sizes are constants at `main+0x8d9610`). In the 15 MB heap the setup allocates the renderer config and work buffer (0x760000: `AudioRenderSystem::GetWorkBufferSize`, 0x40a9c8 of it command buffer) and one block per player (up to 0x1b5860; three of the four mix 5.1). The fourth block came back null, the setup released its memory pools (`RequestAttachMemoryPool` then `Detach` with no update between) and returned −51, the first sound archive (ASRS) never loaded, and the resource the main thread waited for depended on it.
-- **Fix:** a per-build cut moves 4 MB from the sound data heap to the engine heap (its `patches.py`).
+- **Cause:** the DSP service and an application's local SDK server use different command/state representations. The host forwarded the local CPU server's work-buffer requirement as the guest's DSP-service requirement. Larger local command structures could then exhaust a fixed sound heap that fits the service's budget. Changing only the device / execution fields in the local sizing routine does not reveal this difference: it still sizes the same compiled structures. The game note records the comparison against Horizon's actual sizing code and the resulting allocation failure.
+- **Fix:** `ar_service_work_size` in `hle_audren.c` computes the Horizon service budget through renderer revision 15, with revision gates for graph/splitter storage, effect states, performance frames and command storage. A DSP caller receives that size. On open the host independently asks the SDK for its CPU/manual requirement and supplies a page-aligned, zeroed backend buffer if it exceeds the caller's capacity; a buffer below the declared service requirement is rejected. Both open forms share the allocation, including a nested no-event open. Failed opens free it; close joins the render thread, closes the SDK renderer, then frees it. Explicit CPU renderers keep their SDK contract. A sufficient caller buffer is reused; revisions beyond the verified service model retain the SDK size. No firmware is loaded or distributed at runtime, and no game's heap constants change.
 - **Found on:** [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md).
-- **Note:** how it was found: probe the pump the wait calls (`main+0x8e1c0`: first missing stage bit → the type's stage handler), the handler's dependency list (an incomplete entry of type `0xbbd39f2d`, ASRS), then the memory pool states (`MemoryPoolInfo` +0x10: 1 new, 3 detached, 4 request attach, 5 attached, 6 unused) and the engine allocator's arguments and results. Why hardware fits in 15 MB is not known.
+- **Check:** `make -C dm/host/tests GAME=<id> audren-work` checks independently obtained Horizon sizing fixtures, both public parameter layouts, uninitialized padding, unsupported revisions, nested opens, undersized buffers, failure cleanup, caller-owned storage and close lifetime. The sizing implementation also matched 360 seeded parameter sets executed through Horizon's original machine code across REV1–REV15. The game note records the original-heap reproduction and audio check.
 
 ## Command lists by SDK
 

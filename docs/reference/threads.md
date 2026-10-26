@@ -4,6 +4,14 @@ Guest threads, their synchronization and how the host schedules them. Each entry
 
 ## Thread creation and cores
 
+### Starting a higher-priority thread on the caller's core
+
+- **Symptom:** a parent returns from `StartThread` before a newly runnable higher-priority child pinned to its core finishes its work (deterministic regression, not attributed to a game failure).
+- **Cause:** `StartThread` signalled the child's pthread but did not request the priority handoff already used when waking a waiter. Atmosphère's [`KThread::Run`](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libmesosphere/source/kern_k_thread.cpp) makes the child runnable; scheduler priority rules then apply. It does not promise that an equal-priority or other-core child has entered its function before the call returns.
+- **Fix:** `note_runnable` records the same handoff for starts and wakes (`hle_thread.c`). No unconditional child-entry handshake or timeout.
+- **Check:** `make -C dm/host/tests GAME=010038B015560000 preempt` delays the child's host dispatch by 1 ms and 20 ms. With `DM_PREEMPT=0`, both delayed starts failed before the fix. Afterward both `DM_PREEMPT=0` and `1` pass; the broader mode already supplied the handoff before this correction. Equal-priority, other-core, migratable, host-helper, suspended and host-GPU-work children do not hold up the caller.
+- **Found on:** the threading audit of [FINAL FANTASY TACTICS](../../dm/games/010038B015560000/README.md#threads); its affected workers are lower priority and initially migratable, so this correction does not remove its local wake cut.
+
 ### Core mask changes move the ideal core into the new mask
 
 - **Symptom:** per-core job queues never drained.
@@ -66,8 +74,9 @@ Guest threads, their synchronization and how the host schedules them. Each entry
 ### Late PhysX task destructor after the unlock
 
 - **Symptom:** a PhysX worker crashes in a task's `removeReference` with a null task manager, right as the game switches to 30 fps (`pc=main+0x10ccf28`, `lr=main+0x13c236c`); on the iPhone and in 2 of 5 Mac runs, in every Mac run with 12 busy loops loading the CPU.
-- **Cause:** a destructor that runs a moment too late. The game rebuilds each physics world's completion task in place before every `simulate` (`main+0x15730`, main thread). A worker runs the task (`fetchResults`, sets the world's done flag, notifies, unlocks) and then calls its `release`, which calls the task's own destructor (vtable back to the `PxLightCpuTask` base, `mTm = 0`). At 30 fps the game steps twice per frame, so the unlock wakes a main thread that steps again at once. On the Switch the `release` follows the unlock within nanoseconds; on Apple devices the worker can be descheduled between them, the main thread rebuilds the task, and the late destructor wipes the new one. The next simulation's `NpSceneCompletion::release` then dereferences `mTm`.
+- **Cause:** the game publishes completion before task teardown ends, then reuses the same task. Its main thread rebuilds each world's completion task before `simulate`; the worker sets done, notifies and unlocks inside `run`, then calls `release`, whose destructor clears `mTm`. Another core may rebuild it in between. This is a guest lifetime race: an unlock cannot protect subsequent destructor writes. PhysX's [task contract](https://github.com/NVIDIAGameWorks/PhysX-3.4/blob/master/PxShared/include/task/PxTask.h) places recycling in `release`, after `run`, and its `PxLightCpuTask` destructor clears `mTm`. There is no measured Switch timing guarantee that makes the ordering safe. The game's offsets, affinities and replay evidence are in its note.
 - **Fix:** a per-build cut makes that one `release` a `ret` (its `patches.py`); the destructor frees nothing and the step rewrites every field.
+- **Check:** `dm/tools/check_thread_cuts.py` replays the original construction, release and `removeReference` instructions with a forced late release: the original faults at the recorded null-manager load; normal release-before-rebuild succeeds; the registered cut preserves the new task. This controlled replay has no host mutex or graphics implementation in its failure path.
 - **Found on:** [The Legend of Zelda: Link's Awakening](../../dm/games/01006BB00C6F0000/README.md). How it was found is in [05](../agents/05-debugging.md#racy-crashes-load-trace-gates).
 
 ## Yields and spin waits
@@ -100,13 +109,22 @@ The yield back-off (`DM_YIELD_BACKOFF`) and the rewriter's spin waits (`patch_ns
 
 ## Events and notifications
 
+### Service-event producers follow the binding lifetime
+
+- **Symptom:** a host helper thread aborts when signalling a destroyed `SystemEvent`; repeated `vi::GetDisplayVsyncEvent` calls double the event's tick rate. Rapid replacement can abort with `too many vsync events`, or a retired vsync worker can signal another service's event at reused storage.
+- **Cause:** lazy binding calls the SDK's `CreateSystemEvent`, which requires a guest thread. Checking only the guest address also mistakes a replacement binding for the original event, even if its kernel handle number is checked: both can be reused before the next tick. An eight-slot worker table counts destroyed events until their workers next run.
+- **Fix:** `hle_signal_system_event` retains lazy binding on guest threads; host threads skip an unbound event and log once. Each service-event binding gets a monotonically increasing identity. `hle_signal_system_event_binding` matches that identity and signals under the same lock as `CloseHandle`, so a stale producer cannot signal a replacement. The vi registry keeps one worker per binding identity in an allocated list; a worker whose binding closed removes only its own entry and exits. A new vi binding at reused storage gets its own worker, while repeated requests for a live binding share the existing one.
+- **Found on:** synthetic host regression cases in [`t_system_event.c`](../../dm/host/tests/t_system_event.c), using real binding and event SVCs with worker startup held until after destruction and handle reuse; no game failure is claimed.
+- **Check:** duplicate vi registration, nine rapid replacements before the first tick, storage and handle reuse by a different service, vi rebinding at reused storage, host signalling after destruction, and guest lazy binding. The capacity and unrelated-service cases fail on the original PR #202 and pass with lifetime identities and the allocated registry.
+
 ### One auto-clear event shared by a pool's workers
 
 - **Symptom:** the main thread waits forever on a job's done event at boot while every worker sleeps, two of them on one event (`main+0x1426c` waiting on `Job::m_doneEvent`); 4 of 6 Mac runs.
-- **Cause:** the engine's job pools wake one worker through the pool's single auto-clear event. A job goes into worker k's own queue (`main+0x154c0`), and if k's state reads asleep the caller signals the event (`main+0x12554`); the kernel wakes the waiter that slept first, which is k only while the workers sleep in index order. A worker woken for another's job runs only its own queue and sleeps again, so with two workers in one pool the signal is lost: at boot when worker 1 went to sleep before worker 0, and later as a job left in worker 0's queue for 12 s. The thread dump's `wait #` (the order condition waiters arrived in, which `SignalProcessWideKey` wakes them in at equal priority) showed the order in every hung run.
+- **Cause:** the engine puts a job in worker k's private queue but signals one shared SDK auto-clear event. Its condition wake chooses by priority, then FIFO; it has no target-worker identity. The wrong worker checks only its own queue and sleeps again. This is a guest assumption about waiter order, exposed by host timing. Host `pick` / `wseq` agrees with Atmosphère's [condition-tree comparator](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libmesosphere/include/mesosphere/kern_k_thread.hpp) and [`Signal`](https://github.com/Atmosphere-NX/Atmosphere/blob/master/libraries/libmesosphere/source/kern_k_condition_variable.cpp), including the historic 0.19.0 implementation. This describes the SDK's condition-based auto-clear event; kernel readable events instead notify all synchronization waiters. Game offsets and observations belong in its note.
 - **Fix:** the game's own wait wrapper (`main+0x12500`, `{event, pending}`) signals the event once more when it takes a nonzero pending word after waking, and nothing set it: a build cut makes the signal set it first (its `patches.py`), so a worker woken in another's place passes the wake on; 6 of 6 runs boot.
 - **Found on:** [FINAL FANTASY TACTICS - The Ivalice Chronicles](../../dm/games/010038B015560000/README.md).
-- **Note:** a host change that made `StartThread` return only once the new thread runs (as a free Switch core takes it within microseconds) brought the hangs to 1 in 6 and was dropped.
+- **Check:** `t_preempt` checks priority/FIFO selection and mutex reacquisition through real condition SVCs. `dm/tools/check_thread_cuts.py` runs the game's actual signal and wait wrappers with both worker arrival orders: only the original wrong-worker cases strand a job. The game's note records the Mac boot comparison with the corrected host.
+- **Note:** an unconditional `StartThread` child-entry handshake changed the timing but did not eliminate the hang and is not a kernel guarantee. The separate [same-core start handoff](#starting-a-higher-priority-thread-on-the-callers-core) applies only when priority and affinity require it.
 
 ### The oe notification event and its queue
 

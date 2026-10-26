@@ -6,7 +6,6 @@ Update 1.4.1 (v393216) over the base game, SDK 7.3.2. Nintendo EPD's sead / agl 
 
 | Setting | Where | Why |
 |---|---|---|
-| `alpha_from_red` with the 26 layout pixel shaders (`main`'s BNSH at 0x132c000) | [`game.tsv`](game.tsv) | the HUD's coin counters came out as solid white cards; inert on the Mac since the `nvnTextureCompare` fix, kept until an iPhone run; see [Rendering](#rendering) |
 | `pad_layout full` | `game.tsv` | the 3D gamepad layout |
 | 4 GB layout: `mem_reserve 0x100000000`, `mem_alias 0x10000000`, `mem_stack 0x10000000`, `app_pool 0xCD500000` | `game.tsv` | from the NSP script's provisional profile |
 | Node area cut and 32 MB alignment of large regions | `dm/tools/sdk_patches.py`, `sdk` build `fcf93a41…` | registered for DRAGON QUEST XI S on the same build; Odyssey has no virtual address memory and never allocates an address region |
@@ -20,7 +19,7 @@ No `patches.py`. `op_mode` stays docked: Odyssey only takes its motion moves in 
 
 ## Rendering
 
-- **HUD (layout captures).** The coin counters (coin, regional coin) and other layout panes take their alpha from single-channel render targets, as in Breath of the Wild; read literally they were solid white cards, which `alpha_from_red` fixed. Odyssey's layouts rebuild their captures through the same agl code (`main+0x982320` replaces the registered descriptor only if `nvnTextureCompare` reports a difference), so the comparison fix covers them too. **Current:** on the Mac smoke route to frame 20,100 the list converted no texture (the host before the fix converted its first, a 640×80 R8 target, at frame 4129), and the HUD at frames 17,300 and 17,600 is pixel-identical. The list stays until the change has been seen on an iPhone.
+- **Resolved: hard-edged dark boxes behind the HUD's layout panes** (the coin counters' solid white cards, a dark box behind the "Look Around" hint; layout captures, as in Breath of the Wild). The game creates each capture with its per-format default mapping (an R8 capture reads (R, 0, 0, 1)), rebuilds it on the same storage with the capture's own mapping, (1, 1, 1, R), and replaces the registered descriptor only if `nvnTextureCompare` reports a difference (`main+0x982320`). The host compared everything but the mapping, so the captures kept alpha 1. Fixed by the general [`nvnTextureCompare` compares the channel mapping](../../../docs/reference/rendering.md#nvntexturecompare-compares-the-channel-mapping). The profile's earlier workaround, `alpha_from_red` (all 26 layout pixel shaders, `main`'s BNSH at 0x132c000, read such targets as (R, 0, 0, R)), is gone with its host code. Checked on the Mac from the "Look Around" hint with a probe host on the comparison: 40 rebuilds in the first 11,700 frames change only the mapping, R8 captures (640×80, 400×120, 390×80, 378×80, 300×40, 250×50, 128×128, 64×64, 48×57) from (R, 0, 0, 1) to (1, 1, 1, R) and a 320×180 RGBA one from (R, G, B, 1) to (R, G, B, A). Ignoring the mapping again brings back a dark box behind the hint (about 12,800 pixels from frame 4,200 on); with the old list the workaround converted the 378×80 capture and the frames matched the fixed host's; with the fix, the list converted nothing and changed nothing (the frames 4,200 to 6,600 equal to the pixel but for the hint video's corner). The comparison and the views run the same on the iPhone (no platform branch), so the rebuilt captures leave no (R, 0, 0, 1) target for the list to find there either.
 - **Resolved: the Cap Kingdom fog never parted around Mario (reported on an iPhone; fix checked on the Mac).** The fog's shading reads velocity fields that a small fluid simulation updates every frame: two 256×256 and two 128×128 RG16F targets, with a two-pass blur and a blended composite. Its only input is a point-sprite splat per mover, drawn with `alPointSpriteShader`: one vertex per mover, its size in the vertex data (Mario's main splat about 18 px, others 3–5 px) and a soft disc in the fragment shader (`clamp(1 - 4r², 0, 1)` × velocity). The vertex shader writes `gl_PointSize = min(size, c0[0x610])`, and the host had nothing at that offset of the driver segment, so every splat had size 0 and the fields stayed exactly zero (raw dumps with `DM_NVN_TEXDUMP` + `DM_NVN_SNAPRAW`). The host now writes the largest point size, 2047, at `c0 + 0x610` for the graphics stages. Writing the `SetPointSize` value instead (always 1 here) left one-pixel splats whose disc weight came out 0 (the fields held `-0.0`). After the fix the fields hold velocities up to ±44 and the fog clears around Mario.
 - **Resolved: the Cap Kingdom ground showed 32×32 blocks of a stale image on every fourth frame (Mac).** Presents 4k were brighter and blocky, 4k+1 and 4k+2 clean, 4k+3 partly blocked, repeating to the decimal across runs; only with the ground's material (`b6384a85afd3ef94`) drawn. In some frames the game first draws a depth pre-pass (`alRenderDepthOnly`) for objects its occlusion queries report visible (the queries rotate through three slots, hence the cycle), then the G-buffer with other vertex shaders and depth test less-or-equal, without clearing the colour targets. Metal compiled the two vertex shaders' identical position math to slightly different depths, the G-buffer fragments failed the test and kept the previous content. Every Metal compile now uses `-fpreserve-invariance`. Ruled out on the way: the TBDR optimizations, same-pass feedback, the present path; evaluating the game's conditional rendering on the CPU from earlier frames' results made it worse (the condition belongs to the same frame on the GPU), so the host still ignores the condition here and draws (no `render_cond`).
 - Its three geometry shaders (a thunder effect) do not translate.
@@ -53,7 +52,9 @@ No `patches.py`. `op_mode` stays docked: Odyssey only takes its motion moves in 
 
 ## Found on this game
 
-General host changes first needed here; each applies to every game:
+General host and tool changes first needed here; each applies to every game:
+
+- **Resolved: NSZ decompression rejected `--keys`** when packing v0: [NSZ decompression rejects `--keys`](../../../docs/reference/packing.md#nsz-decompression-rejects---keys).
 
 - **Largest point size at `c0 + 0x610`**: [04, section 3](../../../docs/agents/04-graphics.md#3-find-the-binding-layout-by-census) and [Graphics `c0 + 0x610`: the largest point size](../../../docs/reference/shaders.md#graphics-c0--0x610-the-largest-point-size).
 - **Invariant positions** (`-fpreserve-invariance` in `dmsh_build.py` and `ios_metal.py`): [Position invariance across shaders](../../../docs/reference/shaders.md#position-invariance-across-shaders).
@@ -63,7 +64,6 @@ General host changes first needed here; each applies to every game:
 
 ## Open
 
-- `alpha_from_red` is inert on the Mac but stays until an iPhone run shows the HUD without it.
 - The three thunder geometry shaders do not translate.
 - The silent first minute of sound.
 - development.md calls SDK 7.3.2 "the oldest so far"; Mario Kart 8 Deluxe (SDK 4.4.0) is older now.

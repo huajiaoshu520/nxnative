@@ -1,6 +1,6 @@
 # Pokémon Sword (`0100ABF008968000`)
 
-Update 1.3.2 (`v458752`) over the base game, SDK 7.3.2. Game Freak's engine before Trinity, on NVN, with Wwise sound (a 6-channel `AudioOut`), Pia / NEX networking and Silicon Studio's YEBIS post effects. Modules `main`, `subsdk0` (the movie module), `subsdk1` (GLSLC, which `main` imports but never calls) and `sdk`; `sdk` and `subsdk0` are the same builds as Super Mario Odyssey 1.4.1's ([0100000000010000](../0100000000010000/README.md)). Started from the provisional profile the NSP script wrote from its survey (`dm/games/profile_guess.py`). Plays on the iPhone (IPA 12.4 GB) at 30 fps, as on the Switch.
+Update 1.3.2 (`v458752`) over the base game, SDK 7.3.2. Game Freak's engine before Trinity, on NVN, with Wwise sound (a 6-channel `AudioOut`), Pia / NEX networking and Silicon Studio's YEBIS post effects. Modules `main`, `subsdk0` (the movie module), `subsdk1` (GLSLC, which `main` imports but never calls) and `sdk`; `sdk` and `subsdk0` are the same builds as Super Mario Odyssey 1.4.1's ([0100000000010000](../0100000000010000/README.md)). Started from the provisional profile the NSP script wrote from its survey (`dm/games/profile_guess.py`). Plays on the iPhone (IPA 12.4 GB) at 30 fps, as on the Switch. Pokémon Shield ([01008DB008C2C000](../01008DB008C2C000/README.md)) has the same modules but `main` and the same shaders.
 
 ## What it needs
 
