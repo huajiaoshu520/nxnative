@@ -31,6 +31,21 @@ CUTS = {
     (0x134778, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x13480c, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
   ],
+  # Sea of Stars 2.0.59001 (v786432) sdk (SDK 16.2.0, the build of Super Mario Bros. Wonder 1.0.0 / 1.0.1): the same node area cut. nninitStartup (main+0x8b66a0) calls
+  # StandardAllocator::Initialize(nullptr, pool − used) with virtual address memory, which aborted at sdk+0x126440 (Initialize+0xc0). The constructor is Brain Memory Training Academy's
+  # at sdk+0x134718 (limit = alias start + 0x3fe00000 at +0x28, a unit heap of 0x30-byte nodes, the area then registered as occupied at +0x1347bc).
+  # VammManager::AllocateAddressRegion's placement (sdk+0x1348b0) aligns a region by its size: 64 KB under 2 MB, 2 MB under 4 MB, 4 MB under 32 MB, 32 MB under 1 GB, else 1 GB, and starts
+  # the next region at that alignment past a 4 KB guard. Unity 2021.3's virtual allocator (main+0x48deb0 → main+0x12e12c0) reserves N MB + 252 KB and aligns its blocks to 256 KB itself, so each
+  # of its 94 regions of 16.25 MB took a 20 MB slot and each 4.25 MB one an 8 MB slot: measured in the prologue, 2.59 GB of live regions with 0.86 GB of gaps between them, the alias region's
+  # high-water mark at +4.26 GB of 4.375 GB with a 1.5 GB pool (with the hardware pool Unity got no region and wrote at NULL + 0x3fffe0, main+0x48b770). SDK 20 aligns regions to 64 KB or 2 MB
+  # only (FINAL FANTASY RESONANCE's build, below); these three classes take its 2 MB
+  '3053b22935e32ddf15ef81997603e5c2': [
+    (0x134728, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x1347bc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0x134914, '0b40a052', '0b04a052', 'AllocateAddressRegion: alignment of regions from 32 MB to 1 GB mov w11,#0x2000000 → mov w11,#0x200000 (2 MB, as SDK 20)'),
+    (0x13491c, '0a00a852', '0a04a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x200000 (2 MB, as SDK 20)'),
+    (0x134920, '0808a052', '0804a052', 'AllocateAddressRegion: alignment of regions from 4 MB to 32 MB mov w8,#0x400000 → mov w8,#0x200000 (2 MB, as SDK 20)'),
+  ],
   # Patrick's Parabox 1.0.1 (v65536) sdk (SDK 13.3.7, Unity 2020.3.30f1): the same node area cut. nninitStartup (main+0x1cd010) calls StandardAllocator::Initialize(nullptr, pool − used) with virtual
   # address memory, which aborted at its CentralHeap::Init (sdk+0x324dec). The constructor is at sdk+0x37c3a0 (limit = alias start + 0x3fe00000 at +0x28, a unit heap of 0x30-byte nodes, the area then
   # registered as occupied at +0x37c44c)
