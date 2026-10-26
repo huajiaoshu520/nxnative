@@ -8,6 +8,10 @@ Silicon Mac, install and open full Xcode and accept its license first. Double-cl
 2. Your own `prod.keys` file.
 3. The folder for the resulting unsigned IPA.
 
+The three picker prompts follow macOS preferred languages: Simplified Chinese,
+Traditional Chinese, or English (fallback for other languages). This only changes
+the picker text, not the game language; use `--language` for the game.
+
 The frontend installs missing build dependencies, runs the **current official**
 `scripts/build_ipa_from_nsp.py`, validates the package, and writes
 only the complete IPA into your chosen output folder after a successful build. Generated

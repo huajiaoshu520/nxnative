@@ -81,6 +81,16 @@ class FrontendTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), 'ok')
 
+    @unittest.skipUnless(platform.system() == 'Darwin', 'AppleScript requires macOS')
+    def test_picker_localizes_without_changing_system_settings(self):
+        cases = [('zh-Hans-CN', '选择'), ('zh-Hant-TW', '選擇'), ('en-US', 'Select'), ('fr-FR', 'Select')]
+        for language, expected in cases:
+            with self.subTest(language=language):
+                result = subprocess.run(['osascript', str(ROOT / 'dm/local_one_click/choose_inputs.applescript'), '--test-prompts', language], capture_output=True, text=True, check=True)
+                self.assertEqual(len(result.stdout.strip().splitlines()), 3)
+                self.assertIn(expected, result.stdout)
+                self.assertIn('prod.keys', result.stdout)
+
     def test_picker_preserves_actual_error(self):
         response = subprocess.CompletedProcess([], 1, '', 'execution error: fixture (-10006)')
         with patch.object(frontend.subprocess, 'run', return_value=response):
