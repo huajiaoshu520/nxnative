@@ -13,6 +13,13 @@ def call(args, **kwargs):
     subprocess.run([str(a) for a in args], check=True, **kwargs)
 
 
+def install_brew(brew, missing):
+    # Homebrew ask mode is now the default; this frontend already installs
+    # its declared build dependencies without an extra terminal prompt.
+    call([brew, 'install', '--no-ask', *missing],
+         env=dict(os.environ, HOMEBREW_NO_ASK='1', NONINTERACTIVE='1'))
+
+
 def available(name):
     try:
         return importlib.util.find_spec(name) is not None
@@ -36,7 +43,7 @@ def ensure(game_dir, launcher, args):
                     script.write_bytes(r.read())
                 call(['bash', script], env=dict(os.environ, NONINTERACTIVE='1'))
             brew = '/opt/homebrew/bin/brew'
-        call([brew, 'install', *missing])
+        install_brew(brew, missing)
     if sys.version_info < (3, 12):
         py = '/opt/homebrew/opt/python@3.14/bin/python3.14'
         os.execv(py, [py, str(launcher), *args])
