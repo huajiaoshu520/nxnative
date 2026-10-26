@@ -44,6 +44,13 @@ For a replaced DSP renderer the size query keeps the service's work-buffer contr
 - **Found on:** [Mario Kart 8 Deluxe](../../dm/games/0100152000022000/README.md) (4.4), the first game it was plainly wrong for.
 - **Check:** checked with sound on [Big Brain Academy: Brain vs. Brain](../../dm/games/0100620012D6E000/README.md) (11.4, +0x1d8), [DRAGON QUEST XI S](../../dm/games/01006C300E9F0000/README.md) (7.3, `MutexType` +0x1d8) and [Super Mario Odyssey](../../dm/games/0100000000010000/README.md) (7.3, which is silent for its first minute with either lock).
 
+### No `SdkMutexType` in SDK 3
+
+- **Symptom:** `FATAL audren: missing SDK symbol _ZN2nn2os12SdkMutexType4LockEv` right after the renderer's render thread starts.
+- **Cause:** the render path looked up `SdkMutexType::Lock` / `Unlock` before reading which lock the SDK's `Update` takes ([The renderer's update lock](#the-renderers-update-lock-update_lock)); SDK 3.5.1's `sdk` has no `SdkMutexType` and takes `nn::os::LockMutex` at +0x1f8.
+- **Fix:** `render_once` looks up the `SdkMutexType` functions only when `update_lock` does not find `LockMutex` (`hle_audren.c`).
+- **Found on:** [OCTOPATH TRAVELER](../../dm/games/010057D006492000/README.md) (SDK 3.5.1), the first SDK 3 game through the audio renderer (Bayonetta 2's 3.6.0 plays through `AudioOut`).
+
 ### The render thread's route through the public `ExecuteAudioRendererRendering` (SDK 20)
 
 - **Symptom:** `CommandListProcessor::Process` crashes now and then (SIGSEGV under `render_main`, once at 60 s and once at 134 s in the shrine); every `RequestUpdate` renders a catch-up frame.

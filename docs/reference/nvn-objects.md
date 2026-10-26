@@ -65,6 +65,21 @@ The game may also write into an NVN object directly, without an NVN call, throug
 - **Fix:** such a pool gets an address range of its own at `MemoryPoolInitialize` (reserved, inaccessible: 64 GB on the Mac, at most 1 GB on iOS), and each mapping request `vm_remap`s the physical pages over its part of the range, so virtual addresses read and write the same memory, as the GPU's page table does. Each run of mapped pages is registered with the replay like a pool of its own and rebuilt when a request joins or splits runs (`vpool_*` in `hle_nvn.c`). Mario's 128 MB pool, mapped whole onto one physical pool, keeps the alias. The log reports the mapped high-water mark per 128 MB.
 - **Found on:** [Monster Hunter Rise](../../dm/games/0100B04011742000/README.md).
 
+### Virtual pools of one texture each, mapped before and after the texture
+
+- **Symptom:** `[RED] MapVirtual: non-contiguous mapping (true sparse) not implemented`, on small virtual pools; streamed textures black or missing (OCTOPATH TRAVELER's village ground and plants).
+- **Cause:** Unreal Engine 4.18's NVN RHI gives each streamed texture a virtual pool of its own (0x20000 to 0x560000 bytes, flags 0x2a1), creates the texture in it before mapping anything, maps the mip tail from a 4 MB physical pool after writing its texels there on the CPU, and later maps the higher mips from other pages of that pool. Only pools larger than the application pool had [an address range of their own](#sparse-virtual-pools-built-from-separate-physical-pools); the others were aliased onto `physical − offset` at their first mapping, so the texture had no storage (its pool had none when it was created) and every later mapping at another base was refused.
+- **Fix:** every virtual pool gets its reserved range at `MemoryPoolInitialize` (`vpool_reserve`; the sparse records are now one per pool, reached through `pool_t.vp`, without the old limit of 4). Its first mapping request decides: one that maps the whole pool from offset 0 keeps the alias (the range is given back; Mario's 128 MB pool), anything else makes the pool sparse, with the page table and the uploads through it ([next entry](#textures-read-through-a-4-kb-page-table-of-a-sparse-pool)).
+- **Found on:** [OCTOPATH TRAVELER](../../dm/games/010057D006492000/README.md): 221 pools by the first village; the same route with the old alias left the ground, plants and props black.
+- **Not checked:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md) (no game files on hand), whose pool should take the alias branch as before.
+
+### The sparse tile layout of a texture
+
+- **Symptom:** `[RED] NVN unimplemented function called: nvnTextureBuilderGetSparseTileLayout`, then an out-of-memory abort in Unreal's allocator (`Failed to allocate 1879113728 bytes from Standard Allocator`, on `DM_DBG=1`).
+- **Cause:** the call fills `NVNtextureSparseTileLayout` {numTiledLevels, tile width, height and depth in texels, 16 reserved bytes}; Unreal Engine 4.18 sizes a sparse texture's mip tail as storage(all levels) − storage(numTiledLevels levels) and allocates it from its heap. Unimplemented, the count was stack garbage and the whole 1.75 GB texture counted as tail.
+- **Fix:** `nvnTextureBuilderGetSparseTileLayout` and `nvnTextureGetSparseTileLayout` answer from the host's [sparse layout](rendering.md#sparse-textures-laid-out-in-64-kb-tiles) (`nvn_tex_sparse_tiles`: the levels at least one tile wide, high and deep).
+- **Found on:** [OCTOPATH TRAVELER](../../dm/games/010057D006492000/README.md), at boot (`main+0x1f1a688`).
+
 ### Textures read through a 4 KB page table of a sparse pool
 
 - **Symptom:** `CRASH sig=10` in `memmove` from `pkg_upload` → `nvn_deswizzle`, at an address 32 GB into a sparse virtual pool; textures with unaliased tails came out magenta.
