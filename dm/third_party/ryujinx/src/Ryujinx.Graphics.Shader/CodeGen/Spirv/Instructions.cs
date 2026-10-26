@@ -624,9 +624,10 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
 
             bool bounded = context.HostCapabilities.Msl23ImageAtomics;
             if (bounded && ((texOp.Flags & TextureFlags.AtomicBoundsMask) != 0 ||
-                !texOp.Flags.HasFlag(TextureFlags.AtomicDiscardResult)))
+                texOp.Flags.HasFlag(TextureFlags.AtomicPredicateResult) ||
+                (texOp.Flags & TextureFlags.AtomicMask) == TextureFlags.CAS))
             {
-                throw new NotSupportedException("MSL 2.3 image atomics require IGN with a discarded result; TRAP/returning semantics are not implemented.");
+                throw new NotSupportedException("MSL 2.3 image atomics require IGN without CAS or a predicate result; TRAP semantics are not implemented.");
             }
             if (bounded && (declaration.IsIndexed ||
                 (texOp.Type != SamplerType.TextureBuffer && texOp.Type != SamplerType.Texture2D &&
@@ -673,6 +674,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             SpvInstruction value = Src(componentType);
 
             SpvInstruction merge = null;
+            SpvInstruction valid = null;
+            SpvInstruction invalid = null;
             if (bounded)
             {
                 // Test each original coordinate, including the array layer, before
@@ -691,10 +694,11 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
                     inside = context.All(boolType, inside);
                 }
 
-                SpvInstruction valid = context.Label();
+                valid = context.Label();
                 merge = context.Label();
+                invalid = texOp.Flags.HasFlag(TextureFlags.AtomicDiscardResult) ? merge : context.Label();
                 context.SelectionMerge(merge, SelectionControlMask.MaskNone);
-                context.BranchConditional(inside, valid, merge);
+                context.BranchConditional(inside, valid, invalid);
                 context.AddLabel(valid);
 
 
@@ -726,10 +730,21 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             if (bounded)
             {
                 context.Branch(merge);
-                context.AddLabel(merge);
-                // The source instruction discards this result. This constant is
-                // IR plumbing, not an invented OOB return value for SUATOM.
-                result = context.Constant(resultType, 0);
+                if (texOp.Flags.HasFlag(TextureFlags.AtomicDiscardResult))
+                {
+                    context.AddLabel(merge);
+                    result = context.Constant(resultType, 0);
+                }
+                else
+                {
+                    // IGN image atomics leave memory alone and return zero outside
+                    // the image (ARB_shader_image_load_store, issue 30). Inside it,
+                    // return the actual old texel, as Unreal's particle counters need.
+                    context.AddLabel(invalid);
+                    context.Branch(merge);
+                    context.AddLabel(merge);
+                    result = context.Phi(resultType, result, valid, context.Constant(resultType, 0), invalid);
+                }
             }
             return new OperationResult(componentType, result);
         }

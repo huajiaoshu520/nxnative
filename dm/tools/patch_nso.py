@@ -738,7 +738,7 @@ def jump_masked_pred(insl, j):
     t = [tb + struct.unpack_from('<i', IMG, tb + 4 * i)[0] for i in range(n)]
     addresses = {p.address for p in insl}
     return t if all(x in addresses for x in t) else None
-def tail_call(insl, j):
+def tail_call_at_end(insl, j):
     """The br x18 is an indirect tail call, not a jump table: the last write of x18 before it is a plain pointer load and the br ends the function. Ace Attorney Investigations Collection
     (Unity 2022.3 IL2CPP) main+0x1d271bc: ldr x18,[x0,#0x18]; ...; ldr x16,[sp]; ...; br x18, a thunk that moves stack arguments and jumps to the method pointer at +0x18"""
     if j + 1 != len(insl): return False
@@ -746,6 +746,42 @@ def tail_call(insl, j):
         if 'x18' not in [p.reg_name(r) for r in p.regs_access()[1]]: continue
         return p.mnemonic == 'ldr' and bool(re.fullmatch(r'x18, \[(x\d+|sp)(, #(0x[0-9a-f]+|\d+))?\]', p.op_str))
     return False
+def tail_call(insl, j):
+    """Keep the existing terminal-tail rule; extend only the framed thunk with
+    a separate error call after its tail jump (Warm Snow, Unity IL2CPP).
+    The whole thunk must decode contiguously, restore its frame, and contain
+    only one forward null guard, this tail jump, and the trailing error call.
+    This deliberately does not generalize arbitrary mid-function br x18."""
+    if j + 1 == len(insl): return tail_call_at_end(insl, j)
+    if j < 4 or any(b.address != a.address + 4 for a, b in zip(insl, insl[1:])): return False
+    suffix = insl[j + 1:]
+    if suffix[0].mnemonic != 'bl' or any(p.mnemonic != 'udf' for p in suffix[1:]): return False
+    if insl[0].address <= suffix[0].operands[-1].imm <= insl[-1].address: return False
+    if insl[0].mnemonic != 'stp' or insl[0].op_str != 'x29, x30, [sp, #-0x10]!': return False
+    if insl[1].mnemonic != 'mov' or insl[1].op_str != 'x29, sp': return False
+    if insl[j - 1].mnemonic != 'ldp' or insl[j - 1].op_str != 'x29, x30, [sp], #0x10': return False
+    guard = insl[2]
+    if guard.mnemonic != 'cbz' or guard.operands[-1].imm != suffix[0].address: return False
+    load = None
+    for k in range(3, j - 1):
+        p = insl[k]
+        # Argument moves and memory transfers only. No hidden control flow,
+        # stack-pointer writes, or unmodelled instructions inside the new thunk form.
+        if p.mnemonic not in ('mov', 'ldr', 'ldur', 'ldp', 'str', 'stur', 'stp'): return False
+        writes = {p.reg_name(r) for r in p.regs_access()[1]}
+        if writes & {'sp', 'wsp', 'fp', 'lr', 'x29', 'w29', 'x30', 'w30'}: return False
+        if p.mnemonic in ('str', 'stur', 'stp'):
+            # regs_access does not report memory writes. Only fixed caller stack
+            # argument slots are proven clear of the saved FP/LR at sp + [0, 16).
+            # Other bases may alias that frame, and a register offset is unproven.
+            if p.writeback: return False
+            mem = p.operands[-1].mem
+            if p.reg_name(mem.base) not in ('sp', 'fp', 'x29') or mem.index or mem.disp < 16: return False
+        if writes & {'x18', 'w18'}:
+            if load is not None or p.mnemonic != 'ldr' or not re.fullmatch(r'x18, \[(x\d+|sp)(, #(0x[0-9a-f]+|\d+))?\]', p.op_str): return False
+            load = p
+    return load is not None
+
 def jump_bytes_far(insl, j):
     """The byte / halfword table form with its add further back (Octopath Traveler 0 main+0x37f9bc8: adr x18,#L; ldrb w0,[x17,x15]; add x18,x18,x0,lsl #2, then 17 register moves before br x18).
     Up to 32 instructions back, and x18 must not change between the add and the br. Tried only where the 16-instruction search and the offset forms find nothing. Returns (base, width) or None"""

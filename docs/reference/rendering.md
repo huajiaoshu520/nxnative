@@ -14,9 +14,11 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 
 ### New textures start as zero
 
+- **Symptom:** a decoded movie stays black even though its YUV textures contain the picture; disabling its depth test makes it visible.
 - **Cause:** Metal leaves a new texture's content undefined; a freshly mapped Switch memory pool reads as 0, and feedback effects (such as Mario's fountain wave simulation, [Metal 4 does not order operations inside one encoder](#metal-4-does-not-order-operations-inside-one-encoder)) never clear their state texture.
-- **Fix:** non-packaged colour textures are zero-filled from a shared zero buffer when created (`tex_zero_fill`, batched with the uploads).
-- **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md).
+- **Fix:** non-packaged colour textures are zero-filled from a shared zero buffer when created (`tex_zero_fill`, batched with the uploads). Depth and stencil textures, including multisample textures, are cleared to zero in render passes in the same upload batch, for every level and slice. Upload-failure recovery tracks these destinations too.
+- **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md); [Pokémon Brilliant Diamond](../../dm/games/0100000011D90000/README.md): the opening movie's YUV conversion uses GEQUAL against a new 1920×1080 depth texture that the game never clears. Metal supplied depth 1, discarding the movie; zero initialization restores it without a shader override.
+- **Check:** `t_clear_ds` poisons depth and stencil before calling the real initializer and checks both become zero; depth clear, stencil-view and upload-budget tests cover the related paths.
 
 ### Texture swizzle through swizzled Metal views
 
@@ -134,6 +136,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Cause:** a sampler built with `SamplerBuilderSetReductionFilter` (min / max) was averaged by the host. Metal 26 has the same thing (`MTLSamplerDescriptor.reductionMode`), but ignores it with a nearest or no mip filter.
 - **Fix:** reduction samplers filter mips linearly (`samp_by_id`): at the integer LODs reductions are used with, that is the same level.
 - **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md): its depth pyramid is built with a min-reduction sampler (`SamplerBuilderSetReductionFilter 1`; `151607c7a92386cc` samples the level above at an explicit LOD).
+
+### Texture fields Metal refuses
+
+- **Symptom:** the process ends at once (the window vanishes), with `-[MTLTextureDescriptorInternal validateWithDevice:]` failing an assertion such as `requests 9 mipmap levels, but the dimensions (1, 1, 1) can only support 1`, or `sampleCount must be > 1 for multisample textures`.
+- **Cause:** NVN takes texture fields Metal refuses, and Metal aborts instead of returning nil: more mip levels than the size holds (on NVN the extra levels are 1×1), an array or 3D texture of no layers, more than 2048 layers (a 1D array's layer count is its height, which the size check let through), and sample counts the GPU lacks (an M4 Pro has 1, 2 and 4; NVN also has 8 and 16). A blit at a level the Metal texture lacks is not checked either.
+- **Fix:** `tex_desc` makes such textures with the levels their size holds, one layer for none, and the largest sample count the GPU has below the one asked for (the pipelines follow, since their sample count is the attachments'). A red line names each case once. Textures of more than 2048 layers, and multisample textures of one sample, are not made. Copies and `ReadTexels` at a level the host texture lacks are skipped (`tex_level_ok`). Retail data is within every bound except, possibly, 8- or 16-sample targets.
+- **Found on:** reported by MacNativeGames (`f864eb0`): a mod's 1×1 texture in Tears of the Kingdom declaring 9 levels. No game here is known to reach it; the sample counts (an M4 Pro has 1, 2 and 4, and a multisample texture of one sample aborts) were checked on that Mac while porting the fix.
+- **Check:** `t_view_levels` makes each case with Metal's validation layer on: a 1×1 texture of 9 levels, a 3D texture whose depth holds the levels, an array of no layers, a 1D array of 4,096 layers, an 8-sample and a 1-sample multisample texture, and a copy at a missing level.
 
 ## Render targets, passes and clears
 
@@ -582,7 +592,7 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 ### Depth-stencil copies carry the stencil
 
 - **Symptom:** no ambient occlusion (Mac); on a device the result depends on whatever that memory holds.
-- **Cause:** the depth downsample copy left the stencil as the new texture's undefined content (new depth-stencil textures are not zero-filled).
+- **Cause:** the depth downsample copy left the stencil as the destination's previous content (at the time, new depth-stencil textures were not zero-filled either).
 - **Fix:** the copy now carries the stencil.
 - **Found on:** [The Legend of Zelda: Link's Awakening](../../dm/games/01006BB00C6F0000/README.md): the occlusion pass (`aa05724ffa62cb82`, a 480×270 R8 target cleared to 1.0) only writes where stencil bit 1 of the quarter-size depth-stencil copy is clear, so on the Mac the mask kept 1.0 everywhere.
 

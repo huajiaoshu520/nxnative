@@ -549,6 +549,14 @@ Most service calls can be found before they crash, before the first boot or the 
 
 ## Modules and symbols
 
+### Host symbol indexes avoid repeated name scans
+
+- **Symptom:** relocation repeatedly scans all HLE and forced-takeover entries, and named-stub reuse becomes quadratic as more imports are missing.
+- **Cause:** module exports already had a name index, but `resolve_import`, `hle_implements`, `force_lookup` and stub reuse still searched their tables linearly.
+- **Fix:** open-addressed name indexes store entry numbers. HLE duplicates retain the first entry; forced-takeover duplicates still abort. Stub insertion grows its index above half capacity and retains existing stub numbers. Resolution is serialized at startup and by the module write lock during runtime NRO loading; module string tables stay mapped across unload.
+- **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md#found-on-this-game), reported in [PR #261](https://github.com/seedds/nxnative/pull/261).
+- **Check:** `make -C dm/host/tests GAME=010015100B514000 symbols nro` covers collisions that wrap around the table, duplicate precedence/rejection, absent sections and names, counting-wrapper selection, all 4,096 stubs through growth and reuse at capacity, and NRO relocation/lifecycle. The symbol test also passes AddressSanitizer and UBSan. A local arm64 Mac synthetic 270-entry HLE table with 25% misses, Apple clang 21 at `-O1`, took 375–442 ns per linear lookup versus 15 ns indexed (25–29x; three runs of 360,000 lookups). This measures lookup cost, not overall game loading time; no new gameplay run here.
+
 ### Global symbol resolution in load order
 
 - **Symptom:** a library's `free` rejects a pointer (`CentralHeap::Free` → `NotNMallocPtrError`).

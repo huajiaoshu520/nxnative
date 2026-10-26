@@ -6,7 +6,9 @@ Portable tests require Python. To exercise the actual rebuilt offline compiler:
 Requires spirv-cross and spirv-val on PATH; optionally DMSH_TEST_METAL=1 on Mac
 also compiles and links each generated MSL file. DMSH_TEST_METAL_SDKS defaults
 to macosx; set macosx,iphoneos to check both SDKs with the production flags.
-No shader is submitted to a GPU and no game inputs are used.
+Set DMSH_TEST_GPU=1 with DMSH_TEST_METAL=1 to execute the returning buffer
+fixtures on a Mac GPU and check returned values and surrounding sentinels.
+No game inputs are used.
 """
 import ast
 import importlib.util
@@ -33,7 +35,7 @@ def offset(coord, extent):
     return coord[0] + extent[0] * (coord[1] + extent[1] * coord[2])
 
 
-def synthetic_shader(x, y, layer=0, *, array=True, mode=0, discard=True, reduction=False, size=0, dim=None, bindless=None):
+def synthetic_shader(x, y, layer=0, *, array=True, mode=0, discard=True, reduction=False, size=0, dim=None, bindless=None, consume_result=False):
     table = (RYU / 'Decoders/InstTable.cs').read_text()
     def base(name):
         pattern = re.search(r'Add\("([01x]{64})", InstName\.' + name + r'\s*,', table)[1]
@@ -58,7 +60,13 @@ def synthetic_shader(x, y, layer=0, *, array=True, mode=0, discard=True, reducti
             handle = 3  # The constant in R3 cannot resolve to a descriptor.
         op = base('SuredB') | (handle << 39) | (mode << 49) | (dim << 33) | (2 << 24) | (size << 20) | (7 << 16) | 3
     assert ((op >> 49) & 3) == mode
-    instructions += [op, base('Exit') | (7 << 16) | 15]
+    instructions.append(op)
+    if consume_result:
+        assert not discard and not reduction and bindless is None
+        # A valid second atomic consumes R4, including when the first coordinate is invalid.
+        instructions += [mov(0, 0), mov(1, 0), mov(2, 0)]
+        instructions.append(base('Suatom') | (0x48 << 36) | (dim << 33) | (4 << 20) | (7 << 16) | 255)
+    instructions.append(base('Exit') | (7 << 16) | 15)
     words = []
     for i, instruction in enumerate(instructions):
         if i % 3 == 0: words.append(0)  # Maxwell scheduling word
@@ -202,6 +210,50 @@ int main() {
 
 @unittest.skipUnless(os.environ.get('DMSH_TEST_XLATE'), 'rebuilt .NET translator not configured; portable tests only')
 class Compiler(unittest.TestCase):
+    def test_returning_ign_atomic(self):
+        with tempfile.TemporaryDirectory(prefix='dm-image-atomic-return-') as temp:
+            work = Path(temp)
+            for dim, image in ((1, 'buf'), (3, '2d'), (4, '2darray')):
+                for x in (-1, 0, 8):
+                    key = 'return_%d_%d' % (dim, x)
+                    code = work / (key + '.bin')
+                    code.write_bytes(synthetic_shader(x, 0, dim=dim, discard=False, consume_result=True))
+                    jobs = work / 'jobs.json'
+                    jobs.write_text(json.dumps([dict(key=key, stage='cs', code=str(code),
+                        img={'0': dict(type=image, fmt='R32Uint')}, local=[1, 1, 1], debug=True)]))
+                    result = subprocess.run([os.environ['DMSH_TEST_XLATE'], str(jobs), str(work)], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    spv = work / (key + '.spv')
+                    subprocess.run(['spirv-val', '--target-env', 'vulkan1.1', str(spv)], check=True)
+                    ops = instructions(spv)
+                    definitions = {args[1]: (op, args) for op, args in ops if op in (43, 234, 239, 245)}
+                    phis = [args for op, args in ops if op == 245]
+                    self.assertEqual(len(phis), 1)
+                    phi = phis[0]
+                    # The valid edge supplies the actual old texel; the invalid edge supplies zero.
+                    self.assertEqual(definitions[phi[2]][0], 239)
+                    self.assertEqual(definitions[phi[4]][0], 43)
+                    self.assertEqual(definitions[phi[4]][1][2], 0)
+                    # Debug translation may pass the phi through a local and a bitcast.
+                    dependencies = {}
+                    for op, args in ops:
+                        if op in (61, 83, 124):
+                            dependencies.setdefault(args[1], set()).add(args[2])
+                        elif op == 62:
+                            dependencies.setdefault(args[0], set()).add(args[1])
+                    def reaches(value, target, seen=None):
+                        seen = set() if seen is None else seen
+                        if value == target: return True
+                        if value in seen: return False
+                        seen.add(value)
+                        return any(reaches(source, target, seen) for source in dependencies.get(value, ()))
+                    self.assertTrue(any(op == 234 and reaches(args[-1], phi[1]) for op, args in ops))
+                    msl = work / (key + '.metal')
+                    subprocess.run(['spirv-cross', '--msl', '--msl-version', '20300', '--msl-argument-buffers',
+                        '--msl-texture-buffer-native', str(spv), '--output', str(msl)], check=True)
+                    msl.write_text(atomic.lower_msl(msl.read_text()))
+                    self.compile_metal(msl, work, key)
+
     def test_descriptor_sized_formats(self):
         # Sd32 takes its format from the descriptor. Validate that original
         # format before the legacy translator can default it to R32Sint.
@@ -256,6 +308,14 @@ class Compiler(unittest.TestCase):
             self.assertGreater(air.stat().st_size, 0)
             self.assertGreater(library.stat().st_size, 0)
             print('synthetic Metal compile/link passed:', key, sdk, library.stat().st_size, 'bytes')
+            if sdk == 'macosx' and key.startswith('return_1_') and os.environ.get('DMSH_TEST_GPU') == '1':
+                executable = work / 'atomic-return'
+                if not executable.exists():
+                    subprocess.run(['clang', '-fobjc-arc', '-O1', '-Wall', '-Werror',
+                        str(ROOT / 'dm/gfx/tests/t_atomic_return.m'), '-framework', 'Foundation',
+                        '-framework', 'Metal', '-o', str(executable)], check=True)
+                expected = 6 if int(key.removeprefix('return_1_')) == 0 else 3
+                subprocess.run([str(executable), str(library), str(expected)], check=True)
 
     def test_dimension_routes(self):
         # 1D routes retain the existing y=0 normalization; buffer images stay
@@ -362,13 +422,13 @@ class Compiler(unittest.TestCase):
                         self.assertIn('.get_height()', source)
                         if array: self.assertIn('.get_array_size()', source)
                         self.compile_metal(msl, work, job['key'])
-            for mode, discard in [(1, True), (2, True), (3, True), (0, False)]:
+            for mode, discard in [(1, True), (2, True), (3, True)]:
                 key = 'reject_%d_%d' % (mode, discard)
                 code=work/(key+'.bin'); code.write_bytes(synthetic_shader(0,0,mode=mode,discard=discard))
                 jp.write_text(json.dumps([dict(key=key,stage='cs',code=str(code),img={'0':dict(type='2darray',fmt='R32Uint')},local=[1,1,1],debug=True)]))
                 result=subprocess.run([os.environ['DMSH_TEST_XLATE'],str(jp),str(work)],capture_output=True,text=True)
                 self.assertNotEqual(result.returncode,0)
-                self.assertIn('require IGN with a discarded result',result.stderr)
+                self.assertIn('require IGN without CAS or a predicate result',result.stderr)
                 self.assertFalse((work/(key+'.spv')).exists())
 
 

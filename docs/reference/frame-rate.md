@@ -22,6 +22,14 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Resolved: movies interrupted thermal recovery, and acquire/present callers raced.** The cap getter short-circuited thermal sampling while a movie or a 30 fps target applied. A serious interval during a movie could leave an earlier calm timer intact and release the cap too soon; cooling during a movie instead added another 30 s hold after playback. Thermal sampling now runs independently of those caps, with a mutex protecting the sample, cached result and recovery timer across acquire/present threads.
 - **Check:** `make -C dm/gfx/tests GAME=01007EF00011E000 check_t_thermal thermal-tsan` drives the production cap getter with a controlled clock and thermal source: serious/critical, recovery interrupted by heat, cooling and heating during movies or a 30 fps target, one-second sampling, disabled/inactive caps, the Mac's absent thermal state, and concurrent readers under ThreadSanitizer. No new device gameplay run or on-device recovery observation is claimed.
 
+### The frame step after a 30 fps cap ends
+
+- **Symptom:** after a 30 fps cap ends (a prerendered movie, the thermal cap), a GPU-bound game stays at 30 fps in a scene that held 60 before the cap; the log shows `frame step cap 30 → 60 fps` and a few frames later `frame step: hold 1 → 2 vsyncs at present … (3 late frames; …)`, with no probe after it.
+- **Cause:** when the cap rose, `nvn_fstep_next` put the hold back to 1 with no grace, while the clocks were still set for 30 fps, so three late frames stepped it up again. After a movie, the cap change had dropped the cost that held hold 1 (`cref`), so the same-cost probe could not fire. After the thermal cap, the GPU reference (`nvn_fgpu`) had been learned during the cap, at the clock it left, so the same work at hold 2 did not look slowed. A cost near `FSTEP_FIT` at either hold kept the fit trial off in both cases.
+- **Fix:** `nvn_fstep.h` keeps `cref` and the GPU reference for each kmin. Entering a cap also saves the cost of an outgoing run that held for at least 8 s, even if no earlier hitch had populated `cref`; a shorter run keeps the earlier proven reference. The frames after the cap rises are a counted probe with the usual 30 frames of grace, starting with the first frame at the shorter hold. The completed frame at the old cap consumes none of that grace, and a failed recovery doubles the hold-off as usual.
+- **Found on:** reading the code; modelled in `t_fstep` with [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md)'s movie flag and [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md)'s iPhone GPU times (0.86 vsyncs at hold 1, 1.5 at hold 2). Not yet seen on these paths in a device log; first seen on a Mac with a 30 fps mode in a downstream fork.
+- **Check:** `make -C dm/gfx/tests GAME=010015100B514000 t_fstep && dm/gfx/tests/t_fstep`: movie and thermal recovery, the first movie without a prior hitch, repeated caps after short and sustained runs, all 30 grace frames, failed-probe backoff and game-time debt. The original recovery cases fail on main before [PR #253](https://github.com/seedds/nxnative/pull/253); its initial fix still failed the first-movie, repeated-cap and full-grace regressions. All pass with the corrections above.
+
 ### GPU timestamps per submission segment
 
 - **Symptom:** slow motion when the GPU is the bottleneck: a game's interval controller that times the GPU never steps up (GitHub issue #9).
@@ -38,6 +46,14 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Check:** `t_timestamp` checks known vectors, long uptimes, round-trip precision and the game's exact inline arithmetic. `t_nvn` checks the API's known units and bounds a completed report between submit and fence wait.
 
 ## Engine frame limiters
+
+### Unity's integer target frame rate
+
+- **Symptom:** menus reach 60 fps with `present_interval display`, but entering gameplay returns to 30 fps despite spare GPU time.
+- **Cause:** the game sets Unity's `Application.targetFrameRate` to 30. Changing NVN's present pacing does not change the engine's own limiter.
+- **Fix:** `hle_fpslock.c` supports integer FPS fields alongside float FPS, milliseconds and vsync counts. Its build-gated row keeps the verified field at the profile's `fps_target` (`DM_FPS_TARGET` overrides it), preserving unset values such as 0 and -1. `present_interval display` removes the separate interval-2 present cap.
+- **Found on:** [Pokémon Brilliant Diamond](../../dm/games/0100000011D90000/README.md), 1.3.0; its note records the setter, field and gameplay timing checks.
+- **Check:** `t_fpslock` exercises the production write path, build mismatch, disabled override, repeated game writes, unset values and 30 fps fallback, plus the existing float, millisecond and two-copy vsync paths.
 
 ### A render-thread limiter with a constant and a fixed time step
 
@@ -141,6 +157,14 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Found on:** [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md), measured upstream in MacNativeGames commit `5f5de5e` and ported in [PR #195](https://github.com/seedds/nxnative/pull/195): in a shrine, game threads at priority 46 delayed the submit thread at priority 97 by about 1.8 ms a frame. Waiting fell from 155 to about 0 ms/s there, with unchanged frame time. Those game measurements have not been repeated here.
 - **Check:** `t_stencil_view`, `t_view_levels` and `t_view_swizzle` exercise production registry lookups and cached views with the new lock on the Mac.
 
+### Hash-table lookups of 8-byte keys
+
+- **Symptom:** in a replay profile, `_platform_memcmp` is most of the time spent in serial lookups (`tex_mtl` through `g_by_serial`).
+- **Cause:** `nvn_hm_get` compared each probed key with `memcmp` and the table's run-time key length, a libc call per probe. The serial, live-serial, ghost, view-cache and compute-pipeline tables have 8-byte keys and are looked up several times per draw.
+- **Fix:** for 8-byte keys `nvn_hm_get` loads the key as one word and compares words. The hash, probe order and answers are the same; puts and deletes are unchanged.
+- **Found on:** MacNativeGames commit `7431eb7` (38 of 55 samples of the serial lookup were `memcmp` in a Tears of the Kingdom profile). Here, a lookup in a 3,000-entry table of 8-byte keys takes 1.5 ns instead of 5.9 ns on an M4 Pro (`clang -O2`, 60 million lookups); no game frame has been measured.
+- **Check:** `t_hmap` checks 8- and 20-byte keys against a naive model through random puts, overwrites, deletes and clears.
+
 ### Submissions handed to the GPU in segments
 
 - **Symptom:** the GPU sits idle each frame while the host translates the submission (a game that does not submit frame N+1 until frame N's GPU work is done).
@@ -149,6 +173,7 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md): a stack sample in the shrine had the main thread in `nvnSyncWait` (the fence of the frame just submitted) for 59% of the time and the render thread in `nvnQueueSubmitCommands` for 40%; the translation was about 3,600 draws and 347 passes, 7 ms, so per frame the GPU ran 13–14 ms and then sat idle 7.7 ms (`DM_NVN_TSV` rows `@gpu_beg_ms` / `@gpu_end_ms` against `@call_ms`). GPU idle per frame went from 7.7 to 3.8 ms; most of the rest is the game's own work between its fence wait and the next submit (about 2.5 ms). The other five games' frame times were unchanged; Metroid Dread's p95 dropped from 19.6 to 16.9 ms.
 - **Note:** after this, BotW's docked frame p50 was 16.7 ms (was 20.8 ms before segmenting). Host translation is 8 ms per frame (22,000 instructions per draw), spread over Metal's encoder creation and draw calls, argument encoding, Objective-C retain / release and pool lookups. The per-pass GPU timer (`DM_NVN_PASSGPU`) is switched off under Metal 4 (`pg_render` returns at once), so GPU time cannot yet be attributed to passes. Render-target traffic per frame is in `DM_NVN_TSV`'s `@rt_load_mb` / `@rt_store_mb`.
 - **Note:** with the encode thread (`DM_NVN_ENC_THREAD`) a segment's commit record is handed to it at once (`rec_publish` in `sub_cut`), not when its block of records fills. Breath of the Wild on an M2 Max (encode thread and snapshots, `DM_FPS_TARGET=120`): the frame's wait on its newest fence 12.5 ms with `DM_NVN_CUT=0`, 5.6 ms with 64, 5.35 ms with 16.
+- **Note:** MacNativeGames moved its cut to 30 draws for the first segment and 40 after (`2fa27d7`; uncapped Tears of the Kingdom in a shrine, 10.77 → 10.60 ms a frame). At this repository's 60 fps cap the size changes nothing where the GPU finishes inside the frame: Breath of the Wild outdoors on an M4 Pro (2026-10-26, the outdoor seed of the [BotW Mac routes](../../dm/games/01007EF00011E000/README.md#mac-routes), frames 3,001–5,700, cut 64) waited on its fence 0.02 ms a frame on average (`@sync_ms`), with GPU span 10.8 ms. The default stays 64; a GPU-bound device (an iPhone) is where a smaller cut could show, through `DM_NVN_CUT`.
 
 ### Address to memory pool lookups by binary search
 

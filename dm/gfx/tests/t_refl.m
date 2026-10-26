@@ -2,6 +2,7 @@
 // Dummy texture type MTLTextureType: 1D=0 1DArray=1 2D=2 2DArray=3 Cube=5 CubeArray=6 3D=7
 #import "../nvn/nvn_refl.h"
 #import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
 #include <stdio.h>
 #include <string.h>
 #include "dmsh_chain.h"   // dm/gfx/nvn (-I from the Makefile)
@@ -22,6 +23,16 @@ static NSDictionary *load(const char *key) {
 
 int main(void) { @autoreleasepool {
     nvn_refl r; char err[160] = "";
+    {   NSDictionary *j = @{@"route": @"B", @"bindings": @[
+            @{@"kind": @"img", @"reg": @2, @"arg_id": @0, @"msl_name": @"cp_i_cb2_4C_r32ui", @"msl_type": @"texture_buffer<uint>"},
+            @{@"kind": @"img", @"reg": @2, @"arg_id": @1, @"msl_name": @"cp_i_cb2_4C_r32ui_atomic", @"msl_type": @"device atomic_uint*"}]};
+        check("buffer image: conversion succeeds", 0, nvn_refl_from_json(j, &r, err, sizeof err));
+        check("buffer image: IMG kind", NVN_RB_IMG, r.b[0].kind);
+        check("buffer image: texture type", MTLTextureTypeTextureBuffer, r.b[0].dtt);
+        check("buffer image: unsigned format", NVN_DPF_UINT, r.b[0].dpf);
+        check("buffer image: paired atomic pointer", NVN_RB_IMGA, r.b[1].kind);
+        check("buffer image: same image slot", r.b[0].reg, r.b[1].reg);
+    }
     {   int f0 = fail;   // Route A is retired: PC-chain reflection (no route = B) must be rejected
         NSDictionary *pc = @{@"arg_buffer_index": @0, @"bindings": @[@{@"type": @"cbuffer", @"reg": @10, @"arg_id": @0, @"access": @"constant", @"msl_type": @"constant cb1_struct*"}], @"vertex_inputs": @[]};
         check("PC chain reflection (no route = B) fails", 1, nvn_refl_from_json(pc, &r, err, sizeof err) != 0);

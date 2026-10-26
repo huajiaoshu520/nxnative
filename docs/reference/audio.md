@@ -114,6 +114,14 @@ For a replaced DSP renderer the size query keeps the service's work-buffer contr
 
 ## AudioOut and devices
 
+### Stopping an AudioOut releases its pending buffers
+
+- **Symptom:** FMOD waits for buffer release after stopping an AudioOut, hanging the game during a scene transition.
+- **Cause:** the host stopped its backend but left unplayed and partially played buffers in the pending queue, so no callback could release them.
+- **Fix:** after stopping a started backend, `au_release_pending` moves the pending buffers to the released queue in order, resets the partial-buffer position and signals the client's release event and the host waiter. Calling Stop on an already stopped output preserves buffers queued for its next Start.
+- **Found on:** [Pokémon Brilliant Diamond](../../dm/games/0100000011D90000/README.md): reported on 1.0.0 in [PR #190](https://github.com/seedds/nxnative/pull/190); the 1.3.0 bring-up passed that transition before this fix.
+- **Check:** `t_audio_spsc` covers a partially consumed buffer, queue wraparound, release notification, repeated Stop and buffers queued before Start, then runs its 100,000-buffer producer/consumer stress test.
+
 ### RemoteIO's default I/O buffer duration
 
 - **Symptom:** crackling on iOS only.

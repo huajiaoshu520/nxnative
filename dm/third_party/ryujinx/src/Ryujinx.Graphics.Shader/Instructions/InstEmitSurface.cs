@@ -297,6 +297,10 @@ namespace Ryujinx.Graphics.Shader.Instructions
             {
                 flags |= TextureFlags.AtomicDiscardResult;
             }
+            if (hasPredicateResult)
+            {
+                flags |= TextureFlags.AtomicPredicateResult;
+            }
 
             if (isBindless)
             {

@@ -109,6 +109,14 @@ To enroll a cut for any game's own module:
 - **Found on:** [Ace Attorney Investigations Collection](../../dm/games/010005501E68C000/README.md) (Unity 2022.3 IL2CPP): `main+0x1d271bc` and `+0x204ebec`.
 - **Check:** every module the rewriter accepted before comes out byte-identical.
 
+### Loaded method-pointer tail call before an error block
+
+- **Symptom:** `jump table 53e9c` while rewriting Warm Snow 2.1.4's Unity IL2CPP `main`.
+- **Cause:** a framed thunk loads a method pointer into `x18`, moves arguments, restores its frame and executes `br x18`. A separate null-error call follows it. The terminal-tail recognizer requires the jump to end the function.
+- **Fix:** keep the existing terminal-tail rule unchanged. Only for nonterminal jumps, recognize a contiguous decoded thunk with the standard 16-byte FP/LR frame, a single forward `cbz` to the trailing error call, plain argument moves/transfers, one pointer load into `x18`, and the matching frame restore. Reject additional control flow, stack-pointer/frame-register/link-register writes, pointer clobbers and undecoded gaps. Stores must use a fixed offset of at least 16 from the unchanged `sp` or frame pointer, so they write caller stack arguments above the saved FP/LR. Checking register writes alone does not protect that saved pair; stores through other bases or dynamic offsets may alias it and are rejected. An unframed loaded-pointer jump followed by other blocks remains unsupported: ending a basic block alone does not prove a tail call.
+- **Found on:** Warm Snow 2.1.4, `main` build `306fc054203275803dcbceba7fb7c392`, at `+0x53e9c`. Its game profile is deliberately outside this change.
+- **Check:** `dm/tools/tests/test_tail_call.py` covers acceptance and rejection with synthetic AArch64 instructions, including saved-frame stores, safe caller argument stores, unproven store addresses, 32-bit and 64-bit SP/FP/LR clobbers (including `wsp`), the unframed guarded block and the previously accepted terminal tail with an intervening conditional branch. Actual game rewrite/build results and remaining coverage are recorded in the PR; no game assets are required by the tests.
+
 ## Exclusive windows
 
 ### Exit stub order in exclusive windows

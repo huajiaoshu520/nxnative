@@ -16,6 +16,7 @@ run: $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_
 	TMPDIR="$(abspath $(B))" $(B)/t_fs_case 2>/dev/null
 	$(B)/t_audio
 	$(B)/t_audio_spsc
+	$(B)/t_fpslock
 	$(B)/t_audren_work
 	$(B)/t_swkbd
 	$(B)/t_altstack
@@ -29,11 +30,19 @@ run: $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_
 	$(B)/t_system_event
 	$(B)/t_vorbis
 	$(B)/t_vorbis_divides
+	$(B)/t_movie_vpx
 	$(B)/t_hid
 	$(B)/t_haptics
 	$(B)/t_haptics_apple
 	$(B)/t_nro
+	$(B)/t_symbols
 run: $(B)/t_nro
+run: $(B)/t_symbols
+$(B)/t_symbols: t_symbols.c ../hle.c ../loader.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	clang -O1 -g -Wall -Werror -Wno-unused-function -Wno-deprecated-declarations -I.. $(GINC) -o $@ t_symbols.c
+.PHONY: symbols
+symbols: $(B)/t_symbols
+	$(B)/t_symbols
 run: $(B)/t_system_event
 run: $(B)/t_audren_work
 $(B)/t_audren_work: t_audren_work.c ../hle_audren.c ../hle.h ../dm.h $(GAME_H) | $(B)
@@ -76,6 +85,9 @@ $(B)/t_audio_spsc: t_audio_spsc.c ../hle_audio.c ../hle.h ../dm.h $(GAME_H) | $(
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_audio_spsc.c -framework AudioToolbox
 $(B)/t_audio_spsc_tsan: t_audio_spsc.c ../hle_audio.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	clang -O1 -g -O1 -fsanitize=thread -Wno-unused-function -I.. $(GINC) -o $@ t_audio_spsc.c -framework AudioToolbox
+run: $(B)/t_fpslock
+$(B)/t_fpslock: t_fpslock.c ../hle_fpslock.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	clang -O1 -g -Wno-unused-function $(GINC) -o $@ t_fpslock.c
 $(B)/t_swkbd: t_swkbd.c ../hle_swkbd.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_swkbd.c ../hle_swkbd.c
 $(B)/t_altstack: t_altstack.c t_altstack_stub.c ../crash.c ../dm.h $(GAME_H) | $(B)
@@ -112,6 +124,12 @@ $(B)/t_vorbis: t_vorbis.c ../../third_party/stb_vorbis/stb_vorbis.c | $(B)
 	clang -O1 -g -Wno-unused-function -Wno-tautological-compare -o $@ t_vorbis.c
 $(B)/t_vorbis_divides: t_vorbis.c ../../third_party/stb_vorbis/stb_vorbis.c | $(B)
 	clang -O1 -g -DSTB_VORBIS_DIVIDES_IN_RESIDUE -Wno-unused-function -Wno-tautological-compare -o $@ t_vorbis.c
+run: $(B)/t_movie_vpx
+$(B)/t_movie_vpx: t_movie_vpx.c ../hle_movie.c $(GAME_H) ../gen/vpx/libvpx.a | $(B)
+	clang -O1 -g -Wno-unused-function -Wno-tautological-compare $(GINC) -I../../third_party/libvpx -I../../third_party/libvpx/config -I../../third_party/stb_vorbis -Wl,-dead_strip -o $@ t_movie_vpx.c ../gen/vpx/libvpx.a -framework AudioToolbox
+../gen/vpx/libvpx.a: FORCE_VPX
+	$(MAKE) -C .. GAME=$(GAME) gen/vpx/libvpx.a
+.PHONY: FORCE_VPX
 $(B):
 	mkdir -p $@
 .PHONY: run tsan
