@@ -85,3 +85,24 @@ interface changes may require a frontend update. Tests can be run with:
 ```sh
 python3 -m unittest discover -s dm/local_one_click/tests -v
 ```
+
+## Integrated XCI cartridges (base + updates + DLC)
+
+The frontend reads the XCI secure partition and its encrypted CNMT metadata with
+LibHac and your own keys; it does not infer the update version from the filename.
+An integrated XCI is exported once as separate base, patch and DLC NSP inputs,
+keeping every NCA unchanged. The original XCI is never modified. The official
+pipeline then selects the newest update, layers it over the base, checks module
+build IDs and builds its normal all-in-one IPA. External NSP updates/DLC beside
+the XCI are also included. Keep one XCI / one game per selected folder.
+
+Exported inputs and all official build caches stay under
+`<game folder>/.nxnative-one-click/container-inputs/`. Allow additional free space
+roughly equal to the XCI's secure content for the exported inputs, on top of the
+normal extraction/build space. Repeated builds reuse these inputs when the
+source and reader are unchanged. An incomplete export is not treated as ready.
+
+`--plan` can inspect XCI contents without export after the metadata tool has been
+prepared by a normal run. Missing keys, unreadable metadata, missing content and
+multiple base applications fail explicitly rather than falling back to a guessed
+v0 build. Integrated XCZ requires decompression to XCI first.

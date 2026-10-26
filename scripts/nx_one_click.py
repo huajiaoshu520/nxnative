@@ -169,7 +169,12 @@ def main(argv=None):
         args = ['--game-dir', str(game_dir), '--keys', str(keys), '--output-dir', str(output),
                 '--language', a.language] + (['--package', a.package] if a.package else [])
         dependencies.ensure(game_dir, Path(__file__).resolve(), args)
-    entry, chosen, family = select_inputs(game_dir, a.package)
+    from containers import normalize
+    prepared_dir = normalize(game_dir, keys, plan=a.plan)
+    if isinstance(prepared_dir, dict):
+        print(json.dumps(prepared_dir, indent=2))
+        return
+    entry, chosen, family = select_inputs(prepared_dir, a.package)
     if a.plan:
         print(json.dumps(dict(game=entry, package=chosen, game_dir=str(game_dir), output=str(output),
                               language=a.language, dlc_packages=len(family['dlc'])), indent=2, ensure_ascii=False))
@@ -189,7 +194,7 @@ def main(argv=None):
         name = Path(entry['ipa']).stem
         target = output / (name + '-' + chosen + '-' + stamp + '-unsigned.ipa')
         partial = output / ('.' + target.name + '.partial.ipa')
-        cmd = command(game_dir, keys, partial, chosen, a.language)
+        cmd = command(prepared_dir, keys, partial, chosen, a.language)
         env = clean_env()
         print('Game: ' + entry['name'] + ' / ' + entry['builds'].get(chosen, chosen + ' (unregistered)'), flush=True)
         print('Log: ' + str(job / 'build.log'), flush=True)
