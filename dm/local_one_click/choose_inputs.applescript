@@ -6,16 +6,16 @@ on promptText(selectionType, preferredLanguage)
     if preferredLanguage starts with "zh" then
         if preferredLanguage contains "Hant" or preferredLanguage contains "TW" or preferredLanguage contains "HK" or preferredLanguage contains "MO" then
             if selectionType is "keys" then return "第 2/3 步：選擇自己的 prod.keys 檔案，不是 title.keys。"
-            if selectionType is "output" then return "第 3/3 步：選擇完整未簽名 IPA 的儲存資料夾。"
+            if selectionType is "output" then return "第 3/3 步：選擇生成的應用或安裝包的儲存資料夾。"
             return "第 1/3 步：選擇遊戲資料夾，內含本體 NSP/XCI、更新及可選 DLC；也支援 XCI 整合包。"
         else
             if selectionType is "keys" then return "第 2/3 步：选择自己的 prod.keys 文件，不是 title.keys。"
-            if selectionType is "output" then return "第 3/3 步：选择完整未签名 IPA 的保存文件夹。"
+            if selectionType is "output" then return "第 3/3 步：选择生成的应用或安装包的保存文件夹。"
             return "第 1/3 步：选择游戏文件夹，内含本体 NSP/XCI、更新及可选 DLC；也支持 XCI 整合包。"
         end if
     end if
     if selectionType is "keys" then return "Step 2/3: Select your prod.keys file (not title.keys)."
-    if selectionType is "output" then return "Step 3/3: Select the folder for the complete unsigned IPA."
+    if selectionType is "output" then return "Step 3/3: Select the output folder for the finished app or package."
     return "Step 1/3: Select one game's folder containing its base NSP/XCI, update and optional DLC. Integrated XCI is supported."
 end promptText
 

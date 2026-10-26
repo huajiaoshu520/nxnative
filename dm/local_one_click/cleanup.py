@@ -29,8 +29,8 @@ def build_lock(game_dir):
 
 def cleanup_success(game_dir, prepared_dir, title_id, ipa, keys):
     game_dir, prepared_dir, ipa, keys = [Path(p).resolve() for p in (game_dir, prepared_dir, ipa, keys)]
-    if not ipa.is_file():
-        raise ValueError('Cannot clean before a verified IPA is published.')
+    if not (ipa.is_file() or (ipa.suffix == '.app' and ipa.is_dir())):
+        raise ValueError('Cannot clean before a verified IPA or Mac app is published.')
     if not title_id or len(title_id) != 16 or any(c not in '0123456789abcdefABCDEF' for c in title_id):
         raise ValueError('Invalid cleanup title ID.')
     work = game_dir / '.nxnative-one-click'
@@ -65,7 +65,7 @@ def cleanup_success(game_dir, prepared_dir, title_id, ipa, keys):
         except OSError as error:
             retained.append(str(path) + ': ' + str(error))
     if retained:
-        print('IPA completed. Some caches retained to protect inputs/saves or because cleanup failed: ' + '; '.join(retained), flush=True)
+        print('Output completed. Some caches retained to protect inputs/saves or because cleanup failed: ' + '; '.join(retained), flush=True)
     else:
-        print('Build caches, generated NSP copies, logs and private dependency environment removed. Original game packages, keys and IPA retained.', flush=True)
+        print('Build caches, generated NSP copies, logs and private dependency environment removed. Original game packages, keys and finished app/package retained.', flush=True)
     return removed, retained

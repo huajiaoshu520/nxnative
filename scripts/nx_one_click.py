@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Double-click frontend for the upstream all-in-one IPA pipeline."""
+"""Double-click frontend for upstream all-in-one IPA and standalone Mac app builds."""
 import argparse
 import fcntl
 import hashlib
@@ -91,10 +91,10 @@ def clean_env():
     return env
 
 
-def command(game_dir, keys, output, package, language):
+def command(game_dir, keys, output, package, language, platform_name="ios"):
     return [sys.executable, str(ROOT / 'scripts/build_ipa_from_nsp.py'), str(game_dir),
-            '-k', str(keys), '-p', package, '-l', language, '--platform', 'ios',
-            '--progress', 'lines', '-o', str(output)]
+            '-k', str(keys), '-p', package, '-l', language, '--platform', platform_name,
+            '--progress', 'lines', '-o', str(output)] + (['--mac-sign', '-'] if platform_name == 'mac-app' else [])
 
 
 def verify_ipa(path, entry, expected_display=None):
@@ -126,6 +126,35 @@ def verify_ipa(path, entry, expected_display=None):
                     registered_version=expected_display)
 
 
+def verify_mac_app(path, entry):
+    resources = path / 'Contents/Resources'
+    info = plistlib.loads((path / 'Contents/Info.plist').read_bytes())
+    if info.get('CFBundleIdentifier') != 'org.nxnative.' + entry['id'].lower():
+        raise ValueError('Unexpected Mac application identifier.')
+    executable = info.get('CFBundleExecutable', '')
+    if not executable or '/' in executable:
+        raise ValueError('Invalid Mac launcher name.')
+    for name in (executable, 'dmhost'):
+        file = path / 'Contents/MacOS' / name
+        if not file.is_file() or not os.access(file, os.X_OK):
+            raise ValueError('Missing executable Mac launcher/host: ' + name)
+    if not (resources / 'romfs').is_dir():
+        raise ValueError('Mac app lacks embedded RomFS.')
+    if entry['marker'] and not (resources / 'romfs' / entry['marker']).is_file():
+        raise ValueError('Mac app lacks the profile RomFS marker.')
+    if not any((resources / 'msl').rglob('*.metallib')):
+        raise ValueError('Mac app lacks embedded Mac shaders.')
+    if not list((resources / 'dm').glob('*.patched.bin')):
+        raise ValueError('Mac app lacks rewritten game modules.')
+    if not list((resources / 'dm/font').glob('*.ttf')):
+        raise ValueError('Mac app lacks its embedded font.')
+    for file in path.rglob('*'):
+        if file.is_symlink() and not file.resolve().is_relative_to(path.resolve()):
+            raise ValueError('Mac app depends on an external file; caches cannot be removed: ' + str(file))
+    subprocess.run(['codesign', '--verify', '--deep', '--strict', str(path)], check=True)
+    return info
+
+
 def digest(path):
     h = hashlib.sha256()
     with path.open('rb') as stream:
@@ -137,6 +166,7 @@ def digest(path):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--select', action='store_true')
+    ap.add_argument('--platform', choices=('ios', 'mac-app'), default='ios')
     ap.add_argument('--list-games', action='store_true')
     ap.add_argument('--json', action='store_true')
     ap.add_argument('--plan', action='store_true', help='inspect inputs without installing or building')
@@ -172,8 +202,8 @@ def main(argv=None):
             # Re-exec with explicit choices: dependency setup never repeats the panels.
             import dependencies
             args = ['--game-dir', str(game_dir), '--keys', str(keys), '--output-dir', str(output),
-                    '--language', a.language] + (['--package', a.package] if a.package else [])
-            dependencies.ensure(game_dir, Path(__file__).resolve(), args)
+                    '--language', a.language, '--platform', a.platform] + (['--package', a.package] if a.package else [])
+            dependencies.ensure(game_dir, Path(__file__).resolve(), args, mac=a.platform == 'mac-app')
         from containers import normalize
         prepared_dir = normalize(game_dir, keys, plan=a.plan)
         if isinstance(prepared_dir, dict):
@@ -182,7 +212,7 @@ def main(argv=None):
         entry, chosen, family = select_inputs(prepared_dir, a.package)
         if a.plan:
             print(json.dumps(dict(game=entry, package=chosen, game_dir=str(game_dir), output=str(output),
-                                  language=a.language, dlc_packages=len(family['dlc'])), indent=2, ensure_ascii=False))
+                                  language=a.language, platform=a.platform, dlc_packages=len(family['dlc'])), indent=2, ensure_ascii=False))
             return
         output.mkdir(parents=True, exist_ok=True)
         work = game_dir / '.nxnative-one-click'
@@ -192,9 +222,10 @@ def main(argv=None):
         job.mkdir()
         # Build into the destination volume; publish only after validation. No overwrite.
         name = Path(entry['ipa']).stem
-        target = output / (name + '-' + chosen + '-' + stamp + '-unsigned.ipa')
-        partial = output / ('.' + target.name + '.partial.ipa')
-        cmd = command(prepared_dir, keys, partial, chosen, a.language)
+        mac = a.platform == 'mac-app'
+        target = output / (name + '-' + chosen + '-' + stamp + ('.app' if mac else '-unsigned.ipa'))
+        partial = output / ('.' + target.stem + ('.partial.app' if mac else '.partial.ipa'))
+        cmd = command(prepared_dir, keys, partial, chosen, a.language, a.platform)
         env = clean_env()
         print('Game: ' + entry['name'] + ' / ' + entry['builds'].get(chosen, chosen + ' (unregistered)'), flush=True)
         print('Log: ' + str(job / 'build.log'), flush=True)
@@ -207,12 +238,18 @@ def main(argv=None):
                     log.flush()
                 if proc.wait():
                     raise ValueError('Official build failed. Log and caches retained: ' + str(job))
-        verify_ipa(partial, entry, entry['builds'].get(chosen))
+        if mac:
+            verify_mac_app(partial, entry)
+        else:
+            verify_ipa(partial, entry, entry['builds'].get(chosen))
         partial.rename(target)
         from cleanup import cleanup_success
         cleanup_success(game_dir, prepared_dir, entry['id'], target, keys)
         print('\nDone: ' + str(target))
-        print('Unsigned all-in-one IPA: no external .data pack. Sign the complete IPA yourself.')
+        if mac:
+            print('Standalone Mac app with embedded game resources. Double-click to run on a supported Apple Silicon Mac.')
+        else:
+            print('Unsigned all-in-one IPA: no external .data pack. Sign the complete IPA yourself.')
         print('No game files were uploaded. A future build will recreate its dependencies and caches.')
 
 

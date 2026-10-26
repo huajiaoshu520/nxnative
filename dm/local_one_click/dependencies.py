@@ -27,10 +27,10 @@ def available(name):
         return False
 
 
-def ensure(game_dir, launcher, args):
+def ensure(game_dir, launcher, args, mac=False):
     if subprocess.run(['xcodebuild', '-version'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
         raise ValueError('Install full Xcode, open it and accept its license before building.')
-    missing = [t for t in ('xcodegen', 'zstd', 'spirv-cross', 'glslang') if not shutil.which(t)]
+    missing = [t for t in (('zstd', 'spirv-cross', 'glslang') if mac else ('xcodegen', 'zstd', 'spirv-cross', 'glslang')) if not shutil.which(t)]
     if sys.version_info < (3, 12):
         missing.append('python@3.14')
     if missing:
@@ -82,7 +82,7 @@ def ensure(game_dir, launcher, args):
                 call([sys.executable, '-m', 'venv', '--upgrade', venv])
             call([py, '-m', 'pip', 'install', *packages])
             os.execv(str(py), [str(py), str(launcher), *args])
-    for sdk in ('macosx', 'iphoneos'):
+    for sdk in (('macosx',) if mac else ('macosx', 'iphoneos')):
         if subprocess.run(['xcrun', '-sdk', sdk, 'metal', '--version'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
             call(['xcodebuild', '-downloadComponent', 'MetalToolchain'])
             break

@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 
-FILES = {'一键生成完整IPA.command', 'scripts/nx_one_click.py',
+FILES = {'一键生成完整IPA.command', '一键生成Mac应用.command', 'scripts/nx_one_click.py',
          'docs/ONE-CLICK.md', '.github/workflows/sync-upstream.yml',
          '.github/workflows/local-one-click-tests.yml'}
 PREFIXES = ('dm/local_one_click/',)

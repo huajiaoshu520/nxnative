@@ -83,6 +83,7 @@ The hourly workflow merges upstream, then restores the fork's pre-merge versions
 of precisely these paths, including when upstream edited or deleted them:
 
 - `一键生成完整IPA.command`
+- `一键生成Mac应用.command`
 - `scripts/nx_one_click.py`
 - `dm/local_one_click/` (frontend dependencies, picker, tests and sync helper)
 - `docs/ONE-CLICK.md`
@@ -119,3 +120,27 @@ source and reader are unchanged. A successful build removes them. An incomplete 
 `--plan` can inspect XCI contents without export when the metadata tool remains from an unfinished normal run. Missing keys, unreadable metadata, missing content and
 multiple base applications fail explicitly rather than falling back to a guessed
 v0 build. Integrated XCZ requires decompression to XCI first.
+
+## One-click standalone Mac app
+
+Double-click `一键生成Mac应用.command` in the root of this complete repository.
+Select the game folder, `prod.keys` and output folder just as for the IPA. It
+calls the same official script with `--platform mac-app`, which builds Mac
+shaders and the Mac host, then embeds rewritten game modules, RomFS, DLC, fonts
+and shaders in a standalone `.app`. It does not produce an IPA, an external
+`.data` pack or a development-only launcher referencing the build cache.
+
+The official packer uses local ad-hoc signing, requiring no developer account.
+The frontend checks the bundle, executables, embedded resources, absence of
+external symlinks and the code signature before publishing it. Generated caches
+are cleaned only after that check. Original inputs, keys, finished `.app` and
+existing saves remain. Double-click the app on a supported Apple Silicon Mac;
+OS and graphics requirements come from the official host/game profile. Game
+compatibility still depends on the upstream runtime and game notes.
+
+```sh
+./一键生成Mac应用.command --game-dir '/path/to/game' \
+  --keys '/path/to/prod.keys' --output-dir '/path/to/output' --language zh-Hans
+```
+
+The Mac launcher is also protected by the hourly upstream sync workflow.

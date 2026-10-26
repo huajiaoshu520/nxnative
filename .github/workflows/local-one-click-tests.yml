@@ -18,3 +18,4 @@ jobs:
         run: |
           python3 -m unittest discover -s dm/local_one_click/tests -v
           bash -n 一键生成完整IPA.command
+          bash -n 一键生成Mac应用.command
