@@ -30,6 +30,13 @@ The guest address space, heaps, pools, virtual address memory and the allocators
 - **Found on:** [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md); [Monster Hunter Rise](../../dm/games/0100B04011742000/README.md); [Metroid Dread](../../dm/games/010093801237C000/README.md); [Catherine: Full Body](../../dm/games/0100BF00112C0000/README.md) (SDK 8.2.1; one boot). The source names no game for the late failures in a busy scene.
 - **Check:** probe `DM_SVC=1`'s `svc 0x1` request and the `AllocateMemoryBlock` result.
 
+### A heap request beyond the heap region returns ResultOutOfMemory
+
+- **Symptom:** `SetHeapSize OOM: req 0x120000000 > cap 0xd0000000`, then `Break#1 reason=0` in `nninitStartup`, with a backtrace through `nn::os::SetMemoryHeapSize` (`sdk+0x967a4`).
+- **Cause:** a game may look for the largest heap it can have by asking for more than there is. Donkey Kong Country: Tropical Freeze's `nninitStartup` (`main+0x1e84c`) binary-searches `SetMemoryHeapSize` between 3 and 6 GB (6 GB is the heap region of a 39-bit address space) and narrows on every failure. SDK 4's `SetMemoryHeapSize` (`sdk+0x9672c`) turns the kernel's ResultOutOfMemory (description 104), 103 and ResultLimitReached (132) into `os::ResultOutOfMemory` (0x1003) and aborts on any other result. For a size larger than the heap region the host returned 0xD401 (InvalidCurrentMemory, 106), so the SDK aborted. Horizon's `KPageTable::SetHeapSize` returns ResultOutOfMemory there.
+- **Fix:** a request larger than the heap region returns 0xD001 (`hle_svc.c`, svc 0x1). The search then settles on 3.09 GB, the pool less the rewritten modules (the same LimitReached check as before).
+- **Found on:** [Donkey Kong Country: Tropical Freeze](../../dm/games/0100C1F0051B6000/README.md) (SDK 4.4.0).
+
 ### `nninitStartup`'s heap only without virtual address memory
 
 - Not needed in the end for [Ace Attorney Investigations Collection](../../dm/games/010005501E68C000/README.md) (1.0.0.2, SDK 17.5.3): the process heap of pull request #16. `nninitStartup` calls `SetMemoryHeapSize` / `AllocateMemoryBlock` only without virtual address memory, and nothing else in `main` calls them ([Virtual address memory follows the NPDM's system resource](#virtual-address-memory-follows-the-npdms-system-resource)).

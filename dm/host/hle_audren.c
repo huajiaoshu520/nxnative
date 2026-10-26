@@ -156,6 +156,15 @@ static Result ar_open(void **handle, void *ev, const uint8_t *param, void *work,
     t_in_open = 1; Result r = ev ? orig_ev(handle, ev, p, work, sz) : orig(handle, p, work, sz); t_in_open = 0;
     if (r) { free(owned); LOG("[RED] audren: SDK OpenAudioRenderer failed %#x", r); return r; }
     if (owned) objmap_put(handle[0], owned);   // Close releases it only after the render thread and the SDK have finished with it
+    // The renderer event as the service gives it. With the DSP service (device 0, what the game asked for) OpenAudioRenderer attaches the service's kernel event (auto-clear,
+    // AttachReadableHandleToSystemEvent); with CPU + manual it creates a local one instead (CreateSystemEvent(ev, AutoClear, false), SDK 4: sdk+0x190b6c). A signal of a local
+    // auto-clear event wakes only its highest-priority waiter, a kernel event wakes every waiter (each tries ResetSignal). Donkey Kong Country: Tropical Freeze waits on it from
+    // two threads: its audio thread (priority 29) every frame, and the main thread while CAudioMemoryPool::Shutdown detaches a pool as a level loads (main+0x6fa8c); the audio
+    // thread took every wake and the main thread waited forever. The renderer signals the event through os::SignalSystemEvent, which takes either kind
+    if (ev && *(int32_t *)(param + P_DEVICE) == 0) {
+        static void (*destroy)(void *); if (!destroy) destroy = gsym("_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE");
+        destroy(ev); hle_bind_system_event(ev, 1);
+    }
     if (atomic_load(&g_open)) { LOG("[RED] audren: a second renderer (the host drives only one)"); return r; }
     g_handle[0] = handle[0]; g_handle[1] = handle[1]; atomic_store(&g_open, 1);
     g_render_tt = dm_guest_thread_spawn(render_main, NULL, 9, 0x10000);

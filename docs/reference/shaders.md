@@ -33,7 +33,7 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Symptom:** the game asks for shaders the map does not have (`[RED] shader ... is not in the shader map`, hundreds of lines), and the split finds far fewer shaders than the game uses (121 against 27,288 on Kirby and the Forgotten Land).
 - **Cause:** HAL keeps its assets in `.cmp` containers: a 4-byte little-endian uncompressed size, then a frame (zstd, or LZ4 in the `ubin/` map data). The split decompressed a zstd file by its magic at offset 0, so a frame that starts at offset 4 was read raw, and the shaders inside the BFRES archives of those containers were never seen.
 - **Fix:** the split opens a size-prefixed frame as well (`unsized`: zstd, with a dictionary as for a plain zstd file, or LZ4) when the file's bytes 4 to 8 are a frame magic and bytes 0 to 4 are not the zstd magic. A frame whose header records a size other than the prefix is not such a container, and the file is read as it is: Tears of the Kingdom's 1,202 `Cave/…/C.crbin.<hash>/*.quad` files are a 4-byte hash (the one in their folder name) and a zstd frame, the only files with a frame at +4 in the RomFS of 39 other games on hand. A frame that records no size must decompress to exactly the prefix's size; otherwise (it does not decompress, it holds more or less, or it names a dictionary `Pack/ZsDic.pack.zs` does not have) the split prints a `[RED]` line and reads the file as it is.
-- **Found on:** Kirby and the Forgotten Land (`01004D300C5AE000`, in bring-up): 7,201 `.cmp` files, 5,121 of them zstd frames with 19,364 BNSH inside (11.2 GB decompressed) and 2,080 LZ4 frames, all of the latter in `ubin/` (0.3 GB, and no BNSH); the same layout is in 430 `.cmpbin` files (76 zstd in `lyt/`, 354 LZ4 in `snd/`). Every zstd frame records its size, the same as its prefix; no LZ4 frame does, and each decompresses to its prefix's size. The split now finds 27,288 shaders in the base game (18,476 in `gfx/`, 8,313 in `ptcl/`, 378 in `lyt/`, 67 in the loose `shader` files, 54 in `main`), against 121 before, and 27,302 with update 1.1.0 (v65536: 14 more in `lyt/`).
+- **Found on:** [Kirby and the Forgotten Land](../../dm/games/01004D300C5AE000/README.md): 7,201 `.cmp` files, 5,121 of them zstd frames with 19,364 BNSH inside (11.2 GB decompressed) and 2,080 LZ4 frames, all of the latter in `ubin/` (0.3 GB, and no BNSH); the same layout is in 430 `.cmpbin` files (76 zstd in `lyt/`, 354 LZ4 in `snd/`). Every zstd frame records its size, the same as its prefix; no LZ4 frame does, and each decompresses to its prefix's size. The split now finds 27,288 shaders in the base game (18,476 in `gfx/`, 8,313 in `ptcl/`, 378 in `lyt/`, 67 in the loose `shader` files, 54 in `main`), against 121 before, and 27,302 with update 1.1.0 (v65536: 14 more in `lyt/`).
 
 ### BNSH in Bezel Engine archives
 
@@ -171,6 +171,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** the reader (`raw_shaders`) takes them. Both neighbours can pass the header and length checks, so it takes only a code area the code builds the address of, the nearest one to the control section's.
 - **Found on:** [Advance Wars 1+2: Re-Boot Camp](../../dm/games/0100300012F2A000/README.md) (Unity 2020.2 with Bink 2's Unity plugin). Of 25 `main`s on hand no other has such control sections.
 
+### SNVN program records in Retro Studios' RFRM forms
+
+- **Symptom:** the provisional split finds only `main`'s 294 GLSLC outputs; the 3D scene and the title logo are magenta, with `[RED] shader … is not in the shader map` lines.
+- **How it is stored:** Retro's files are RFRM forms (`RFRM`, big-endian u64 data length, u64, then the form type and two u32 versions; chunks inside are a fourcc, u64 length, two u32 versions, then the data). `MaterialArchive.arc` is one `MTRL` form holding an `SDX ` chunk (the same materials' D3D bytecode, 3,468 DXBC programs) and an `SNVN` chunk (the NVN ones). The `.pak` files are `PACK` forms whose `ADIR` chunk lists the resources (u32 count, then 36-byte entries: fourcc type, 16-byte GUID, big-endian u64 offset and length); each `MTRL` resource is an RFRM form whose data is one zlib stream holding another `MTRL` form with an `SNVN` chunk. An SNVN program record is a big-endian u32 code length, u32 control length, a byte, u32 stream length, then a zlib stream that inflates to the program's code areas back to back followed by their control sections in the same order (0x840 bytes each on SDK 4). The chunk's tables differ between files, so the reader finds the records by their own lengths: a stream whose header ends where it says and that inflates to exactly code + control bytes.
+- **Startup archive in `main`:** the first programs the game builds (the `CGraphicsUtilCache` quads that draw the title logo) come from a startup material archive compressed into `main` (`NMaterialStartup::get_startup_archive_compressed_buffer`, 5,870 bytes; `NMaterialArchive::ImportStartupArchive` inflates it at boot). Its `CBufferedCompression` header is a type byte (1: LZSS on 8-bit units, `CLZSSDecompressor::DecompressBuffer8`) and three zero bytes; the data inflates to an `MTRL` form like `MaterialArchive.arc`'s. Its programs share code areas with `MaterialArchive.arc`'s but differ in control +0x7d0 (a per-program value), so their keys are their own.
+- **Reader:** `rfrm_shaders`, `snvn_records`, `retro_main_forms` and `retro_lzss8` in `shader_split.py`; each record is one program, so its stages pair with each other.
+- **Found on:** [Donkey Kong Country: Tropical Freeze](../../dm/games/0100C1F0051B6000/README.md) (SDK 4.4.0): 24,098 shaders (11,644 vertex, 11,734 pixel, 720 geometry, which run as compute kernels): 3,460 first seen in `MaterialArchive.arc` (its 3,468 stages), the rest in the 795 `MTRL` resources of the packs, 8 in the startup archive and 294 GLSLC outputs in `main`; about 8 s.
+
 ### MGFX effects in MonoGame XNB files
 
 - **How it is stored:** the 13 XNB files in `Content/Effects` (XNB platform `S`, uncompressed, read by `EffectReader`) each hold one MGFX effect, and `main` holds SpriteBatch's built-in one; no other file and no GLSLC output. A compressed XNB (MonoGame's LZX flag 0x80 or LZ4 flag 0x40, as in Stardew Valley) is decompressed first (`xnb_decompress`).
@@ -204,6 +212,7 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
   - [Brain Memory Training Academy](../../dm/games/0100F5D01DA3A000/README.md) (Unity 2022.3.5f1: only `Data/*.assets`, `level*` and the two engine files in `Data/Resources`, none with type trees). The `Shader` type hash there (`ea424a5f…`) is the one in Ace Attorney Investigations Collection's bundles (2022.3.17f1): the same layout, about 30 structs. Checked against Ace Attorney's own tree: the same 2,324 nodes with the same alignment flags, and its 40 bundle `Shader` objects decode identically with either. 496 stage shaders: 439 engine built-ins, 46 of the game's, 11 of the player's in `main`, and the built-in VR blit's geometry shader, which does not build.
   - [Patrick's Parabox](../../dm/games/0100E44016C22000/README.md) (Unity 2020.3.30f1, built-in shaders only, no bundles) stopped there with hash `a30e3dcf…`, which one 18 KB shader bundle of Fire Emblem Engage (2020.3.18f1) carries; its tree is now in the table too (`SHADER_2020_3`: per subprogram global and local keyword indices, every subprogram in `m_SubPrograms`, no parameter blobs, keyword names or stage counts), equal to Engage's node for node (2,179 nodes, the alignment flags included), and each of the game's 48 `Shader` objects reads to its exact end.
   - [Raging Loop](../../dm/games/010020400E1C2000/README.md) (Unity 2018.3.10f1, no bundles: 48 `Shader` objects in `Data/*.assets` and `Data/Resources`) stopped there with hash `8db76007…`, and no game of that Unity version with a bundle was at hand, so `SHADER_2018_3` is written from AssetRipper's TypeTreeDumps (`StructsDump/release/2018.3.10f1.dump`), checked node for node against the dump (1,325 nodes, the alignment flags included). It is a layout of its own, older than the common structs: no conservative raster state, `BufferBinding` without `m_ArraySize`, `ConstantBuffer` without `m_IsPartialCB`, the parameters in each subprogram and no `m_CommonParameters`, one segment per platform (the pre-2019.3 form Cuphead's trees gave `shader_programs`). Each of the 48 objects reads to its exact end: 450 subprograms of version 201802150 (older than the local keyword list, which starts at 201806140).
+  - [Donkey Kong Country Returns HD](../../dm/games/01009D901BC56000/README.md) (Unity 6000.0.28f1, no bundles): hash `2ec7223d…` matches BALL x PIT's Unity 6000.0.62f1 bundles. `SHADER_6000_0` derives from the 2022.3 layout by removing each pass's `m_EditorDataHash` and `m_Platforms` arrays and appending the shader's `m_AssetGUID`. The generated tree equals the bundle tree in types, field order and alignment flags; the game note records the object census and build results.
 - **Note:** a Unity version whose `Shader` hash is not in the table still stops with the same message; read its tree from any bundle of that Unity version and add it. To take one file out of an NSP without extracting the RomFS, filter `nx_extract`'s `Copy` by path.
 
 ### Unity 6 Shader objects
@@ -235,7 +244,7 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Record:** a decoded shader is an `LSLG` record: `LSLG`, a stage tag (`SV`, `SP`, `SC`), a header with the source name (`/Engine/Private/…usf:MainPS`), then `u32` code length, the code area, `u32` control length (0x880), the control section and a 24- or 29-byte tail, all at unaligned offsets (`uepak.lslg`).
 - **Check:** the host keys came out exactly: 37 of 37 shaders a first run reported missing were in the two archives.
 - **Found on:** [Octopath Traveler 0](../../dm/games/01005270232F2000/README.md): 10,324 unique shaders (1,457 vertex, 6,346 pixel, 2,521 compute); vertex and pixel shaders combine per draw, so every vertex shader is paired with the single-stage cover. Bindings: separate textures and samplers, as Engage's (`0x168` / `0x568`); 61 vertex shaders pick a texture slot at run time (profile key `tex_dyn_slots`, [Texture slots picked at run time](#texture-slots-picked-at-run-time)), 2,084 shaders do atomics on buffer images ([Image atomics](#image-atomics)).
-- **Note:** 16 compute shaders do atomics on a 3D `r32ui` image, which SPIRV-Cross's MSL 2.3 image-atomic emulation indexes with an `int3` (`array subscript is not an integer`): all are Unreal's paged global distance field (`GlobalDistanceFieldCompositeObjects.usf:CompositeObjectsIntoPagesCS`), which the mobile renderer does not dispatch (none in any run), so they stay unbuilt.
+- **Note:** 16 compute shaders do atomics on a 3D `r32ui` image, all Unreal's paged global distance field (`GlobalDistanceFieldCompositeObjects.usf:CompositeObjectsIntoPagesCS`), which the mobile renderer does not dispatch (none in any run). They build since image atomics are native ([Image atomics](#image-atomics)).
 
 ### Unreal Engine 4.27 shader code archives (LZ4)
 
@@ -323,11 +332,11 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 ### Pixel shader inputs the vertex shader does not write
 
-- **Symptom:** `Fragment input(s) user(locnN) mismatching vertex shader output type(s) or not written by vertex shader` and the draw is skipped; the host reports `[RED] failed to create render pipeline (vertex … fragment …)`.
-- **Cause:** every pixel shader input must be a vertex shader output. Maxwell attributes are untyped slots: a pixel shader that reads a slot the vertex shader never wrote gets a default, but Metal refuses to build the pipeline. Translating one shader at a time cannot know what the partner reads.
-- **Fix:** `shader_split.py` writes the pairs of each BNSH variation (`shader_pairs.tsv`) and `dmsh_build.py` gives each vertex shader the outputs its partners read but it doesn't write, as `float4` (0, 0, 0, 1) (`vs_pad`; vertex shaders with partners are finished after the pixel shaders, and the partner list is part of the shader's cache rule, [Shader cache key covering the pairs](#shader-cache-key-covering-the-pairs)). The host caches failed pipelines and reports each once with its vertex / fragment keys; before that, every draw retried the failing compile.
-- **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md): 331 of 9,043 pairs failed; the opening course used none of them, later levels did (about 11,500 failed builds in one 11-minute session).
-- **Check:** check all pairs offline after a build (recipe in [05](../agents/05-debugging.md)).
+- **Symptom:** `Fragment input(s) user(locnN) mismatching vertex shader output type(s) or not written by vertex shader` and the draw is skipped; the host reports `[RED] failed to create render pipeline (vertex … fragment …)`. Offline packing fails with `pso_offline: metal-tt failed` for the same reason.
+- **Cause:** every pixel shader input must be a vertex shader output. Maxwell attributes are untyped slots: a pixel shader that reads a slot the vertex shader never wrote gets a default, but Metal refuses to build the pipeline. Translating one shader at a time cannot know what the partner reads. The offline archive exposed a second omission: prebuild reads both `shader_pairs.tsv` and BAHS program variations in `pso_pairs.tsv`, but padding read only the first table.
+- **Fix:** `dmsh_build.py` reads both pair tables and gives each vertex shader the outputs its partners read but it doesn't write, as `float4` (0, 0, 0, 1) (`vs_pad`). A profile without `pso_pairs.tsv` takes the split's copy beside the package, as the archive builder does. The union controls pixel-before-vertex build order and shader cache dependencies ([Shader cache key covering the pairs](#shader-cache-key-covering-the-pairs)); the profile input stamp includes its `pso_pairs.tsv`, and the NSP script's shader reuse key includes the generated fallback. Padding precedes the depth, shadow-input, pulling and geometry-capture variants. Rebuild shaders and the host for the new chain. The host caches failed pipelines and reports each once with its vertex / fragment keys; before that, every draw retried the failing compile.
+- **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md): 331 of 9,043 pairs failed; the opening course used none of them, later levels did (about 11,500 failed builds in one 11-minute session). The missing BAHS table was reproduced on [Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md#files-and-shaders) ([#283](https://github.com/seedds/nxnative/issues/283)) and [Super Mario Odyssey](../../dm/games/0100000000010000/README.md#files-and-shaders) ([#276](https://github.com/seedds/nxnative/issues/276)); their notes keep the pair counts and validation.
+- **Check:** `dm/gfx/tests/test_dmsh_pairs.py` covers both table locations, union/deduplication, defaults and cache dependencies; Metal compiles the generated sources for Mac and iOS and builds an archive with regular and pulling vertex entries in both depth modes. `test_nsp_mac.py` checks fallback invalidation and progress ordering; `test_nsp_incremental.py` regenerates a missing fallback. Check all pairs offline after a game build (recipe in [05](../agents/05-debugging.md)).
 
 ### Single-stage programs paired with a cover
 
@@ -583,6 +592,13 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** the vendored translator now follows the phis that feed a phi, and treats two `constant buffer | constant` handles as the same value ([third_party/ryujinx/README.md](../../dm/third_party/ryujinx/README.md)). Those accesses become ordinary type-3 handles.
 - **Found on:** [Monster Hunter Rise](../../dm/games/0100B04011742000/README.md) (218 pixel shaders).
 
+### Bindless reads whose handle phi also carries other values
+
+- **Symptom:** none in the log: texture reads come back 0. Particle meshes collapse to a point (their scale reads 0), so effects are missing or show as dark patches. The translator's own message (`Failed to find handle source for bindless access of type "textureBuffer"`) used to be dropped, because `dmsh_xlate`'s accessor had no `Log`; its messages now go into the shader's notes, marked `translator: `, and the build summary counts them apart from unanswered queries.
+- **Cause:** the handle reaches the read through a phi. Some inputs are c2 handle words, the others are not handles: undefined, or a value the compiler kept in the same register on a path where the predicated read does not run (float arithmetic, a texture result, the absolute value of a uniform word). Some phis merge two or more different c2 handles too (a float and a half-precision buffer). `TryConvertBindless` cannot trace one handle, and `GenerateBindlessAccess` refuses a phi with such an input, so bindless elimination deleted the read and wrote 0 to its results.
+- **Fix:** only for a phi `GenerateBindlessAccess` refuses (`TryTableHandle` in the vendored `BindlessElimination.cs`, marked `nxnative:`), the read takes the c2 handles among the phi's inputs (a word, or a texture word ORed with a sampler word or a constant sampler). With one handle, it takes the phi's place. With several, one read is made per handle and the result is the read whose handle equals the phi's value at run time: the host fills c2 with the bound handles, or with slot indices for `tex_dyn_slots`. A candidate that other reads of the shader use as a texture of another shape is left out, so those reads are converted in a second sweep once every other read has registered its texture (`ResourceManager.GetTextureTypes`). An image store or atomic with several candidates is left alone, since one per candidate would write each of them. A phi made only of handle words keeps `GenerateBindlessAccess` (the dynamic arrays of [Texture slots picked at run time](#texture-slots-picked-at-run-time)), so no other shader changes: in FINAL FANTASY RESONANCE, the SPIR-V of the 69,449 other shaders is byte for byte what it was. A chain change.
+- **Found on:** [FINAL FANTASY RESONANCE](../../dm/games/0100606026F12000/README.md): 58,122 reads removed (57,861 of them texture-buffer reads, mostly in Unreal's Niagara particle vertex factories), of which 58,096 in 3,197 shaders are now resolved: 21,380 with one handle, the rest choosing among 2 to 5 at run time. 26 reads in 14 shaders, whose handle comes from no c2 word, are still removed. Reported in GitHub issue #168.
+
 ### Texture slots picked at run time
 
 - **Symptom:** the shaders' bindless arrays have no slot and used not to load; the translator falls back to a 32-entry array such as `array<texturecube<float>, 32> fp_tcube_cb0_40000000`.
@@ -629,84 +645,26 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 ### Image atomics
 
-- **Symptom:** the replay put a texture resource ID where the shader wanted an address; with the old 64 KB dummy buffer, pointers in the game's objects and in the host's program objects got their upper 4 bytes replaced and the game or the replay crashed, or `kIOGPUCommandBufferCallbackErrorPageFault`, after which macOS ignores the process's command buffers (GitHub issue #101).
-- **Cause:** SPIRV-Cross's MSL 2.3 emulation declares the image twice: the texture (`texture_buffer<uint> cp_i_cb2_4C_r32ui`) and a `device atomic_uint* cp_i_cb2_4C_r32ui_atomic` pointer to the same memory, which the build read as a second image of the same slot.
-- **Fix:** the pointer is now its own kind (`NVN_RB_IMGA`), bound to the storage of the image in that slot: a buffer texture is a view of its memory pool, so the atomics and the texture reads see the same words. A block-linear image is a deswizzled Metal copy whose pool memory has another layout, so its atomics go to a scratch buffer (logged red) until a game needs them followed; a 3D image does not compile at all ([Unreal Engine 5 shader code archives (Oodle)](#unreal-engine-5-shader-code-archives-oodle)). The scratch buffer is at least as large as the image (`atom_scratch`): SPIRV-Cross indexes the atomics by the image bound in the same slot (`spvImage2DAtomicCoord`: x + y × its width).
-- **Found on:** [Octopath Traveler 0](../../dm/games/01005270232F2000/README.md): 2,084 such shaders (Unreal's GPU particles); three ran in the first 100 seconds. [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md): in the 64 KB dummy buffer used before, its atomic max into a 480x270 r32ui 2D array (fragment shader `2bd5037003980716`, the scene after the story opening's first cutscene) ran about 1.4 MB past its end, writing into zero-copy pools over the game's heap and into unmapped addresses (GitHub issue #101).
-- **Note:** Metal shader validation (`MTL_SHADER_VALIDATION=1`) stops out-of-bounds accesses, so under it the scene played.
+- **Symptom:** the replay put a texture resource ID where the shader wanted an address; with the old 64 KB dummy buffer, pointers in the game's objects and in the host's program objects got their upper 4 bytes replaced and the game or the replay crashed, or `kIOGPUCommandBufferCallbackErrorPageFault`, after which macOS ignores the process's command buffers (GitHub issue #101). Later, `[RED] image atomics on a block-linear texture … not followed, the atomics go to a scratch buffer`, and compute shaders with atomics on a 3D image did not build (`array subscript is not an integer`).
+- **Cause:** below MSL 3.1, SPIRV-Cross emulates an image atomic with a raw device pointer beside the texture (`texture_buffer<uint> cp_i_cb2_4C_r32ui` and `device atomic_uint* cp_i_cb2_4C_r32ui_atomic`), indexed by the bound image's width (`spvImage2DAtomicCoord`), so the host had to bind memory in that packed layout. A buffer image's pool memory has it. A block-linear image's Metal texture is a deswizzled copy whose pool memory has another layout, so its atomics went to a scratch buffer that nothing read, and a pointer shorter than the image (or an invalid coordinate) wrote over other GPU memory. For a 3D image SPIRV-Cross indexes the pointer with the `int3` coordinate itself.
+- **Fix:** image atomics are Metal's native texture atomics (MSL 3.1: `texture3d<uint, access::read_write>::atomic_fetch_max`). `dmsh_atomic.py` has SPIRV-Cross write shaders with image atomics (an `OpImageTexelPointer`) at MSL 3.1, and every other shader at MSL 2.3 as before, so their MSL is unchanged and their libraries come from the compile cache; a shader whose MSL still has the pointer form fails the build. The atomics act on the texture every other access of the image uses (a buffer image's view of its pool, a linear image's pool memory, a block-linear image's Metal texture), for buffer, 2D, 2D-array and 3D images. Metal runs texture atomics only on an R32Uint / R32Sint texture made with `MTLTextureUsageShaderAtomic`: NVN images of those formats take that usage when they are made (`nvn_mtl.m` `img_usage`; a view keeps working through its base), the build marks the slots a shader uses atomically (`"atomic"` in the reflection, `nvn_rbind.atom`), and the host binds an atomic-capable write sink, logged red, in place of any other texture there (`dummy_img_atomic`). The translator's coordinate guard stays ([Bounds of image atomics](#bounds-of-image-atomics)).
+- **Found on:** [Octopath Traveler 0](../../dm/games/01005270232F2000/README.md): 2,084 shaders with atomics on buffer images (Unreal's GPU particles; three ran in the first 100 seconds) and 16 on a 3D image. [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md): an atomic max into a 480x270 r32ui block-linear 2D array (fragment shader `2bd5037003980716`, the scene after the story opening's first cutscene), which ran about 1.4 MB past the 64 KB dummy buffer into zero-copy pools over the game's heap and into unmapped addresses (GitHub issue #101), then went to a scratch buffer. [FINAL FANTASY RESONANCE](../../dm/games/0100606026F12000/README.md) (8 shaders) and [Ghost Trick](../../dm/games/010029B018432000/README.md) (5, one of them a compare-and-swap): atomics on 3D images.
+- **Check:** `dm/tools/tests/test_image_atomic_bounds.py` with the rebuilt translator, `DMSH_TEST_METAL=1 DMSH_TEST_GPU=1`: synthetic Maxwell atomics on buffer, 2D, 2D-array and 3D images, compare-and-swaps among them, run on native atomic textures of a Mac GPU under the Metal validation layer (`t_atomic_return.m`). `t_refl.m` checks the atomic flag of a reflected image.
 
 ### Buffer image reflection keeps its texture type
 
 - **Symptom:** `image atomics: unsupported or overflowing IMG extent` at the first dispatch, despite a valid four-byte counter buffer.
-- **Cause:** `nvn_refl.m` classified `texture_buffer<uint>` as the default 2D texture. The atomic admission check correctly rejected the actual Metal buffer texture against that 2D descriptor.
-- **Fix:** the shared reflection type decoder recognizes `texture_buffer` as `MTLTextureTypeTextureBuffer`; the matched IMG and IMGA retain their buffer-image shape. `t_refl.m` checks the actual reflection converter with a paired buffer image and atomic pointer.
+- **Cause:** `nvn_refl.m` classified `texture_buffer<uint>` as the default 2D texture. The atomic admission check of the pointer emulation then rejected the actual Metal buffer texture against that 2D descriptor.
+- **Fix:** the shared reflection type decoder recognizes `texture_buffer` as `MTLTextureTypeTextureBuffer`, so a buffer image keeps its buffer-image shape. `t_refl.m` checks the reflection converter with a buffer image.
 - **Found on:** [SHIN MEGAMI TENSEI V: Vengeance](../../dm/games/010069C01AB82000/README.md), compute shader `2d2093c1f1d3a7e0`, image slot 2 (one R32Uint texel).
 
-### Bounded MSL 2.3 atomic emulation
+### Bounds of image atomics
 
 - **Symptom:** Metal shader validation reports invalid image-atomic stores even with an image-sized scratch buffer; without validation, GPU page faults can freeze rendering.
-- **Cause:** the translator lost the surface instruction's `IGN` bounds mode before lowering an image atomic to a raw buffer pointer. Scratch capacity cannot protect against invalid coordinates; the upstream 2D coordinate helper also omits array layers.
-- **Fix:** preserve the supported bounds mode, guard every coordinate before pointer construction, use layer-aware 64-bit addressing, and validate the matching image and buffer's layout and capacity before binding. The supported contract and tests are described below.
-- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#rendering), with the development-build report and remaining gameplay validation recorded there.
-
-Sizing the backing buffer does not make an out-of-range image coordinate safe.
-The offline translator now preserves the Maxwell surface instruction's bounds
-mode and whether the result is discarded. Its Metal-only lowering accepts `IGN`
-reductions and non-CAS atomics, including returned old-texel values. Predicate-returning,
-CAS, `TRAP`, and unknown modes fail translation. This path supports non-indexed 32-bit buffer, 2D and
-2D-array images. Other translator callers do not enable it. Source 1D and
-1D-array instructions retain the existing one-row normalization to 2D `(x, 0)`
-and 2D-array `(x, 0, layer)`; buffer coordinates stay scalar, and buffer MSL is
-not rewritten by the 2D helper. Source 64-bit, floating-point and half2 atomics
-are rejected before descriptor-format resolution can erase their original size.
-Descriptor-sized 32-bit atomics also reject non-R32 integer descriptors before
-the legacy format fallback, both for bound images and constant-buffer-resolved
-bindless handles. An unresolved bindless atomic fails translation instead of
-being removed by bindless elimination. These checks apply only to the Metal
-atomic path; other translator backends retain their existing behavior.
-Indexed, 3D, multisample and other unsupported effective image shapes fail
-closed on this opt-in path; this is not a native-image-atomic implementation.
-
-Returning `IGN` atomics join the valid operation's old-texel result with zero
-from the invalid-coordinate branch using an SPIR-V phi. The pointer and memory
-update exist only in the valid branch. This implements image-atomic bounds
-semantics ([ARB_shader_image_load_store, issue 30](https://registry.khronos.org/OpenGL/extensions/ARB/ARB_shader_image_load_store.txt)):
-invalid coordinates leave memory unchanged and return zero. Found on
-[SHIN MEGAMI TENSEI V: Vengeance](../../dm/games/010069C01AB82000/README.md), whose
-two buffer-image counter shaders were dispatched at boot but rejected because
-they consume their returned values. `test_image_atomic_bounds.py` keeps that
-value live through a second atomic, validates the SPIR-V dataflow and both Metal
-SDKs, and optionally executes the buffer fixtures on a Mac GPU
-(`DMSH_TEST_GPU=1`, `t_atomic_return.m`): valid coordinates return the old value,
-negative and edge coordinates return zero, and surrounding sentinels stay intact.
-
-The SPIR-V queries the bound image's dimensions and tests every original
-coordinate (including the layer) before forming the texel pointer or executing
-the atomic. Negative coordinates fail an unsigned comparison. Coordinates are
-not clamped, flattened for the bounds check, or changed in SPIR-V.
-`dmsh_atomic.py` recognizes the exact standalone SPIRV-Cross MSL 2.3 coordinate
-helper and replaces only that definition with typed, layer-aware helpers using
-64-bit address arithmetic; shader statements and call sites are untouched.
-An unrecognized helper or default alignment fails the build. This is a packed
-emulation layout, not proof that an arbitrary native pool's row pitch, layer
-stride or texture-view offset matches it. The host checks the matched IMG/IMGA
-[layout and capacity contract](../image-atomic-binding-contract.md) before
-binding; block-linear scratch still discards results and does not implement
-image read/write coherence.
-
-Changing this path invalidates the chain and shader cache. Rebuild the translator
-and record its actual fingerprints before preparing shaders again; a host-only
-rebuild is insufficient. The synthetic regression is
-`dm/tools/tests/test_image_atomic_bounds.py`: portable helper/algebra checks plus
-an opt-in rebuilt-translator → SPIR-V validation → MSL 2.3 check. Set
-`DMSH_TEST_XLATE` to the rebuilt translator, with `spirv-val` and `spirv-cross` on
-`PATH`; `DMSH_TEST_METAL=1` also compiles and links with Apple's Metal compiler.
-Set `DMSH_TEST_METAL_SDKS=macosx,iphoneos` to check both SDKs.
-The dimension fixture covers both instruction families for source 1D, buffer,
-1D array, 2D, 2D array and rejected 3D; accepted forms pass SPIR-V validation,
-Cross/helper lowering and the optional Metal checks. Shader acceptance does not
-imply admission of every native host layout. None of these tests executes a
-shader on a GPU.
+- **Cause:** the translator lost the surface instruction's `IGN` bounds mode before lowering an image atomic, so a coordinate outside the image reached memory. Neither a pointer nor a native texture atomic outside its image is defined on Metal.
+- **Fix:** the translator (`TranslationFlags.MetalImageAtomics`, Metal only; other backends keep their behaviour) keeps the bounds mode and whether the result is used, queries the bound image's size and tests every original coordinate, the layer included, before the atomic. Negative coordinates fail an unsigned comparison; coordinates are not clamped or flattened. Invalid coordinates leave memory unchanged and return zero ([ARB_shader_image_load_store, issue 30](https://registry.khronos.org/OpenGL/extensions/ARB/ARB_shader_image_load_store.txt)): a returning `IGN` atomic joins the old texel from the valid branch and zero from the other with an SPIR-V phi. A compare-and-swap (`SUATOM.CAS`: compare with Rb, swap in Rb+1) is Metal's texture compare-exchange behind the same guard; SPIRV-Cross loops `atomic_compare_exchange_weak` until it succeeds or the texel differs. Predicate-returning, `TRAP` and unknown modes fail translation, as do 64-bit, floating-point and half2 sources (checked before the descriptor format can erase their size), descriptors that are not R32 integers, bindless handles that do not resolve statically, and indexed or multisample images. Source 1D and 1D-array surfaces keep the translator's one-row normalization to 2D.
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#rendering) ([PR #178](https://github.com/seedds/nxnative/pull/178)); [SHIN MEGAMI TENSEI V: Vengeance](../../dm/games/010069C01AB82000/README.md), whose two buffer-image counter shaders dispatched at boot consume their returned values.
+- **Check:** `dm/tools/tests/test_image_atomic_bounds.py`. Portable tests check the MSL version choice and the rejection of the pointer form. With `DMSH_TEST_XLATE` set to a rebuilt translator (and `spirv-val`, `spirv-cross` on `PATH`) the synthetic shaders are translated, the guard's dataflow is checked in the SPIR-V (the size query and comparison dominate the atomic, the phi carries zero on the invalid edge), and the MSL is produced; `DMSH_TEST_METAL=1` compiles and links it (`DMSH_TEST_METAL_SDKS=macosx,iphoneos` for both SDKs) and `DMSH_TEST_GPU=1` runs the returning fixtures (above). Changing this path changes the chain version: rebuild the translator and update the lock before building shaders.
 
 ## Shaders compiled at run time
 
