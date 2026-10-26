@@ -163,30 +163,27 @@ def main(argv=None):
         raise ValueError('Select a game folder and your prod.keys file.')
     if game_dir == ROOT or ROOT in game_dir.parents or keys == ROOT or ROOT in keys.parents:
         raise ValueError('Keep game files and keys outside the source repository.')
-    if not a.plan:
-        # Re-exec with explicit choices: dependency setup never repeats the panels.
-        import dependencies
-        args = ['--game-dir', str(game_dir), '--keys', str(keys), '--output-dir', str(output),
-                '--language', a.language] + (['--package', a.package] if a.package else [])
-        dependencies.ensure(game_dir, Path(__file__).resolve(), args)
-    from containers import normalize
-    prepared_dir = normalize(game_dir, keys, plan=a.plan)
-    if isinstance(prepared_dir, dict):
-        print(json.dumps(prepared_dir, indent=2))
-        return
-    entry, chosen, family = select_inputs(prepared_dir, a.package)
-    if a.plan:
-        print(json.dumps(dict(game=entry, package=chosen, game_dir=str(game_dir), output=str(output),
-                              language=a.language, dlc_packages=len(family['dlc'])), indent=2, ensure_ascii=False))
-        return
-    output.mkdir(parents=True, exist_ok=True)
-    work = game_dir / '.nxnative-one-click'
-    work.mkdir(exist_ok=True)
-    with (work / 'build.lock').open('a') as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise ValueError('Another one-click build is using this game folder.')
+    from cleanup import build_lock
+    with build_lock(game_dir):
+        if not a.plan:
+            # Re-exec with explicit choices: dependency setup never repeats the panels.
+            import dependencies
+            args = ['--game-dir', str(game_dir), '--keys', str(keys), '--output-dir', str(output),
+                    '--language', a.language] + (['--package', a.package] if a.package else [])
+            dependencies.ensure(game_dir, Path(__file__).resolve(), args)
+        from containers import normalize
+        prepared_dir = normalize(game_dir, keys, plan=a.plan)
+        if isinstance(prepared_dir, dict):
+            print(json.dumps(prepared_dir, indent=2))
+            return
+        entry, chosen, family = select_inputs(prepared_dir, a.package)
+        if a.plan:
+            print(json.dumps(dict(game=entry, package=chosen, game_dir=str(game_dir), output=str(output),
+                                  language=a.language, dlc_packages=len(family['dlc'])), indent=2, ensure_ascii=False))
+            return
+        output.mkdir(parents=True, exist_ok=True)
+        work = game_dir / '.nxnative-one-click'
+        work.mkdir(exist_ok=True)
         stamp = time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:6]
         job = work / stamp
         job.mkdir()
@@ -207,21 +204,13 @@ def main(argv=None):
                     log.flush()
                 if proc.wait():
                     raise ValueError('Official build failed. Log and caches retained: ' + str(job))
-        info = verify_ipa(partial, entry, entry['builds'].get(chosen))
-        checksum = digest(partial)
+        verify_ipa(partial, entry, entry['builds'].get(chosen))
         partial.rename(target)
-        target.with_suffix('.ipa.sha256').write_text(checksum + '  ' + target.name + '\n')
-        try:
-            source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-        except (OSError, subprocess.CalledProcessError):
-            source = 'source archive (no Git metadata)'
-        manifest = dict(info, game=entry['id'], package=chosen, language=a.language,
-                        source_commit=source, sha256=checksum, embedded_resources=True,
-                        dlc_packages=len(family['dlc']), official_script='scripts/build_ipa_from_nsp.py')
-        target.with_suffix('.ipa.json').write_text(json.dumps(manifest, indent=2))
+        from cleanup import cleanup_success
+        cleanup_success(game_dir, prepared_dir, entry['id'], target, keys)
         print('\nDone: ' + str(target))
         print('Unsigned all-in-one IPA: no external .data pack. Sign the complete IPA yourself.')
-        print('Inputs, outputs, logs and official caches are retained. No game files were uploaded.')
+        print('No game files were uploaded. A future build will recreate its dependencies and caches.')
 
 
 if __name__ == '__main__':

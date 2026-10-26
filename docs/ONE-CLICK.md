@@ -9,8 +9,8 @@ Silicon Mac, install and open full Xcode and accept its license first. Double-cl
 3. The folder for the resulting unsigned IPA.
 
 The frontend installs missing build dependencies, runs the **current official**
-`scripts/build_ipa_from_nsp.py`, validates the package, and writes the IPA,
-SHA256 and a small provenance JSON file into your chosen output folder. Generated
+`scripts/build_ipa_from_nsp.py`, validates the package, and writes
+only the complete IPA into your chosen output folder after a successful build. Generated
 IPAs have unique names; previous output is not overwritten. Renaming or moving
 the source folder is fine if its internal structure stays intact.
 
@@ -57,10 +57,17 @@ for another supported game language; unsupported language selections are rejecte
 by the official pipeline. Add `--plan` to inspect inputs without dependency
 installation, building, notifications or cache changes.
 
-Caches and logs are kept on the game drive: official `<title ID>_build/` plus
-`.nxnative-one-click/` for dependencies and wrapper logs. Inputs and saves are
-not deleted; a failure retains logs and any partial output for diagnosis. Reserve
-roughly twice the input game size plus 10 GB, as for manual NX builds. Keep game
+After the complete IPA passes ZIP and embedded-resource validation, the frontend
+removes its generated extraction, rewrite, shader and compile caches, exported
+XCI NSP copies, local dependency venv/tool cache and build logs. It does not
+create checksum/provenance sidecar files. Your original game packages, keys and
+complete IPA remain. A subsequent build recreates these generated files.
+
+A failed/cancelled build retains caches and logs for diagnosis. Cleanup never
+removes originals or known save folders. If keys, the IPA or a nonempty save
+folder overlap a cleanup target, that target is retained with an explanation.
+Unrelated user files and other games are not swept. Reserve roughly twice the
+input game size plus 10 GB (plus XCI export space) for each build. Keep game
 files and keys outside the source checkout. Never put your game data in Git.
 
 ## Upstream sync protection
@@ -99,10 +106,9 @@ the XCI are also included. Keep one XCI / one game per selected folder.
 Exported inputs and all official build caches stay under
 `<game folder>/.nxnative-one-click/container-inputs/`. Allow additional free space
 roughly equal to the XCI's secure content for the exported inputs, on top of the
-normal extraction/build space. Repeated builds reuse these inputs when the
-source and reader are unchanged. An incomplete export is not treated as ready.
+normal extraction/build space. Retries after a failed build reuse these inputs when the
+source and reader are unchanged. A successful build removes them. An incomplete export is not treated as ready.
 
-`--plan` can inspect XCI contents without export after the metadata tool has been
-prepared by a normal run. Missing keys, unreadable metadata, missing content and
+`--plan` can inspect XCI contents without export when the metadata tool remains from an unfinished normal run. Missing keys, unreadable metadata, missing content and
 multiple base applications fail explicitly rather than falling back to a guessed
 v0 build. Integrated XCZ requires decompression to XCI first.
