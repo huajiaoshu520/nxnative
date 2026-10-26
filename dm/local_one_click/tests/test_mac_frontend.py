@@ -28,24 +28,21 @@ class MacFrontendTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index('--platform')+1],'mac-app')
         self.assertEqual(cmd[cmd.index('--mac-sign')+1],'-')
         self.assertNotIn('--prepare-xcode',cmd)
-    def test_self_contained_app_and_signature_checked(self):
+
+
+    def test_publish_official_app_without_secondary_signature_checks(self):
         with tempfile.TemporaryDirectory() as tmp:
-            app=self.app(Path(tmp))
-            with patch.object(frontend.subprocess,'run') as run:
-                frontend.verify_mac_app(app,ENTRY)
-                self.assertIn('--verify',run.call_args.args[0])
-                self.assertIn('--strict',run.call_args.args[0])
-    def test_external_shader_reference_rejected_before_cleanup(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);app=self.app(root);external=root/'cache.metallib';external.touch()
-            (app/'Contents/Resources/msl/external.metallib').symlink_to(external)
-            with self.assertRaisesRegex(ValueError,'external'):
-                frontend.verify_mac_app(app,ENTRY)
-    def test_missing_resources_fail(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            app=self.app(Path(tmp));(app/'Contents/Resources/dm/font/font.ttf').unlink()
-            with self.assertRaisesRegex(ValueError,'font'):
-                frontend.verify_mac_app(app,ENTRY)
+            root = Path(tmp)
+            partial, target = root / 'partial.app', root / 'finished.app'
+            partial.mkdir()
+            (partial / 'official-resource').write_bytes(b'fixture')
+            with patch.object(frontend.subprocess, 'run') as run:
+                frontend.publish_output(partial, target, mac=True)
+                run.assert_not_called()
+            self.assertTrue((target / 'official-resource').is_file())
+            with self.assertRaisesRegex(ValueError, 'no output'):
+                frontend.publish_output(root / 'missing.app', root / 'other.app', mac=True)
+
     def test_cleanup_retains_finished_app(self):
         import cleanup
         with tempfile.TemporaryDirectory() as tmp:

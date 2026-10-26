@@ -16,7 +16,7 @@ Traditional Chinese, or English (fallback for other languages). This only change
 the picker text, not the game language; use `--language` for the game.
 
 The frontend installs missing build dependencies, runs the **current official**
-`scripts/build_ipa_from_nsp.py`, validates the package, and writes
+`scripts/build_ipa_from_nsp.py`, uses its build result, and writes
 only the complete IPA into your chosen output folder after a successful build. Generated
 IPAs have unique names; previous output is not overwritten. Renaming or moving
 the source folder is fine if its internal structure stays intact.
@@ -131,9 +131,9 @@ and shaders in a standalone `.app`. It does not produce an IPA, an external
 `.data` pack or a development-only launcher referencing the build cache.
 
 The official packer uses local ad-hoc signing, requiring no developer account.
-The frontend checks the bundle, executables, embedded resources, absence of
-external symlinks and the code signature before publishing it. Generated caches
-are cleaned only after that check. Original inputs, keys, finished `.app` and
+The frontend publishes the output when the official command succeeds and the
+requested app exists. It adds no separate resource or signature checks. Generated
+caches are cleaned only after publishing the successful output. Original inputs, keys, finished `.app` and
 existing saves remain. Double-click the app on a supported Apple Silicon Mac;
 OS and graphics requirements come from the official host/game profile. Game
 compatibility still depends on the upstream runtime and game notes.
@@ -144,3 +144,12 @@ compatibility still depends on the upstream runtime and game notes.
 ```
 
 The Mac launcher is also protected by the hourly upstream sync workflow.
+
+### Official build result
+
+The frontend uses the official pipeline's exit status and checks that its requested
+IPA or Mac app exists before publishing it. It does not inspect the output again
+for profile markers, shader layout, bundle metadata or signatures. Resource and
+build validation belong to the official tools. A failed official build preserves
+its logs and caches; a successful output is published before success-only cleanup.
+The game folder, prod.keys file and output folder pickers are unchanged.

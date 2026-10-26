@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """Double-click frontend for upstream all-in-one IPA and standalone Mac app builds."""
 import argparse
-import fcntl
-import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import platform
-import plistlib
 import re
 import subprocess
 import sys
 import time
 import uuid
-import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'dm/local_one_click'))
@@ -26,7 +22,7 @@ def catalog(root=ROOT):
     for path in sorted((root / 'dm/games').glob('*/game.tsv')):
         if not re.fullmatch(r'[0-9A-Fa-f]{16}', path.parent.name):
             continue
-        rows = [line.split('\t') for line in path.read_text(encoding='utf-8').splitlines()
+        rows = [[field.strip() for field in line.split('\t')] for line in path.read_text(encoding='utf-8').splitlines()
                 if line.strip() and not line.lstrip().startswith('#')]
         fields = {r[0]: r[1:] for r in rows}
         builds = {r[1]: r[2] for r in rows if r[0] == 'build' and len(r) >= 3}
@@ -97,70 +93,14 @@ def command(game_dir, keys, output, package, language, platform_name="ios"):
             '--progress', 'lines', '-o', str(output)] + (['--mac-sign', '-'] if platform_name == 'mac-app' else [])
 
 
-def verify_ipa(path, entry, expected_display=None):
-    with zipfile.ZipFile(path) as archive:
-        bad = archive.testzip()
-        if bad:
-            raise ValueError('IPA CRC failed: ' + bad)
-        names = set(archive.namelist())
-        infos = [n for n in names if re.fullmatch(r'Payload/[^/]+\.app/Info.plist', n)]
-        if len(infos) != 1:
-            raise ValueError('IPA must contain exactly one application.')
-        info = plistlib.loads(archive.read(infos[0]))
-        prefix = infos[0][:-len('Info.plist')]
-        if info.get('CFBundleIdentifier') != 'org.nxnative.' + entry['id'].lower():
-            raise ValueError('Unexpected application identifier.')
-        executable = info.get('CFBundleExecutable', '')
-        if not executable or '/' in executable or prefix + executable not in names:
-            raise ValueError('Missing application executable.')
-        if entry['marker'] and prefix + 'romfs/' + entry['marker'] not in names:
-            raise ValueError('IPA lacks the profile RomFS marker.')
-        if not any(n.startswith(prefix + 'msl/') and n.endswith('.metallib') for n in names):
-            raise ValueError('IPA lacks embedded iOS shader libraries.')
-        if not any(n.startswith(prefix + 'romfs/') for n in names):
-            raise ValueError('IPA lacks embedded RomFS.')
-        if any(n.startswith(prefix) and (n.endswith('/embedded.mobileprovision') or '/_CodeSignature/' in n) for n in names):
-            raise ValueError('Expected an unsigned IPA.')
-        # Registered versions describe known builds; NACP is the actual app version.
-        return dict(bundle_id=info['CFBundleIdentifier'], version=info.get('CFBundleShortVersionString'),
-                    registered_version=expected_display)
-
-
-def verify_mac_app(path, entry):
-    resources = path / 'Contents/Resources'
-    info = plistlib.loads((path / 'Contents/Info.plist').read_bytes())
-    if info.get('CFBundleIdentifier') != 'org.nxnative.' + entry['id'].lower():
-        raise ValueError('Unexpected Mac application identifier.')
-    executable = info.get('CFBundleExecutable', '')
-    if not executable or '/' in executable:
-        raise ValueError('Invalid Mac launcher name.')
-    for name in (executable, 'dmhost'):
-        file = path / 'Contents/MacOS' / name
-        if not file.is_file() or not os.access(file, os.X_OK):
-            raise ValueError('Missing executable Mac launcher/host: ' + name)
-    if not (resources / 'romfs').is_dir():
-        raise ValueError('Mac app lacks embedded RomFS.')
-    if entry['marker'] and not (resources / 'romfs' / entry['marker']).is_file():
-        raise ValueError('Mac app lacks the profile RomFS marker.')
-    if not any((resources / 'msl').rglob('*.metallib')):
-        raise ValueError('Mac app lacks embedded Mac shaders.')
-    if not list((resources / 'dm').glob('*.patched.bin')):
-        raise ValueError('Mac app lacks rewritten game modules.')
-    if not list((resources / 'dm/font').glob('*.ttf')):
-        raise ValueError('Mac app lacks its embedded font.')
-    for file in path.rglob('*'):
-        if file.is_symlink() and not file.resolve().is_relative_to(path.resolve()):
-            raise ValueError('Mac app depends on an external file; caches cannot be removed: ' + str(file))
-    subprocess.run(['codesign', '--verify', '--deep', '--strict', str(path)], check=True)
-    return info
-
-
-def digest(path):
-    h = hashlib.sha256()
-    with path.open('rb') as stream:
-        for block in iter(lambda: stream.read(8 * 1024 * 1024), b''):
-            h.update(block)
-    return h.hexdigest()
+def publish_output(partial, target, mac=False):
+    # The official process has already succeeded. Only check that its requested
+    # output exists; do not impose a second resource/layout/signature policy.
+    if not (partial.is_dir() if mac else partial.is_file()):
+        raise ValueError('Official build returned success but no output was found: ' + str(partial))
+    if target.exists():
+        raise ValueError('Output already exists; not overwriting: ' + str(target))
+    partial.rename(target)
 
 
 def main(argv=None):
@@ -238,11 +178,7 @@ def main(argv=None):
                     log.flush()
                 if proc.wait():
                     raise ValueError('Official build failed. Log and caches retained: ' + str(job))
-        if mac:
-            verify_mac_app(partial, entry)
-        else:
-            verify_ipa(partial, entry, entry['builds'].get(chosen))
-        partial.rename(target)
+        publish_output(partial, target, mac)
         from cleanup import cleanup_success
         cleanup_success(game_dir, prepared_dir, entry['id'], target, keys)
         print('\nDone: ' + str(target))

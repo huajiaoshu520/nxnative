@@ -1,14 +1,12 @@
 import importlib.util
 import json
 from pathlib import Path
-import plistlib
 import platform
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-import zipfile
 
 ROOT = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location('frontend', ROOT / 'scripts/nx_one_click.py')
@@ -30,6 +28,53 @@ class FrontendTests(unittest.TestCase):
             profile.parent.mkdir(parents=True)
             profile.write_text('title_id\t0100000000000000\nname\tFixture\nipa\tFixture.ipa\nbuild\tv0\t1.0\nbuild\tv65536\t1.1\n')
             self.assertEqual(frontend.catalog(root)['0100000000000000']['builds'], {'v0':'1.0','v65536':'1.1'})
+
+    def test_catalog_matches_official_profiles(self):
+        spec = importlib.util.spec_from_file_location('official_game', ROOT / 'dm/games/game.py')
+        official = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(official)
+        entries = frontend.catalog()
+        profiles = [official.Game(p.parent) for p in (ROOT / 'dm/games').glob('*/game.tsv')]
+        registered = [g for g in profiles if g.builds()]
+        self.assertEqual(set(entries), {g.id.upper() for g in registered})
+        for g in registered:
+            with self.subTest(game=g.id):
+                entry = entries[g.id.upper()]
+                self.assertEqual(entry['marker'], g.get('romfs_marker', ''))
+                self.assertEqual(entry['builds'], {v: b['display'] for v, b in g.builds().items()})
+
+
+    def test_profile_field_whitespace_matches_official_parser(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / 'dm/games/0100000000000000/game.tsv'
+            path.parent.mkdir(parents=True)
+            path.write_text('title_id \t 0100000000000000 \nname\t Fixture \nipa\t Fixture.ipa \nbuild \t v0 \t 1.0 \nromfs_marker\t System/Resource/ \n')
+            entry = frontend.catalog(root)['0100000000000000']
+            self.assertEqual(entry['marker'], 'System/Resource/')
+            self.assertEqual(entry['builds'], {'v0': '1.0'})
+
+    def test_publish_official_output_without_rechecking_package_contents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            partial, target = root / 'partial.ipa', root / 'finished.ipa'
+            partial.write_bytes(b'official output fixture')
+            frontend.publish_output(partial, target)
+            self.assertEqual(target.read_bytes(), b'official output fixture')
+            self.assertFalse(partial.exists())
+
+    def test_missing_output_and_existing_target_are_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            partial, target = root / 'partial.ipa', root / 'finished.ipa'
+            with self.assertRaisesRegex(ValueError, 'no output'):
+                frontend.publish_output(partial, target)
+            partial.write_bytes(b'new')
+            target.write_bytes(b'old')
+            with self.assertRaisesRegex(ValueError, 'not overwriting'):
+                frontend.publish_output(partial, target)
+            self.assertEqual(target.read_bytes(), b'old')
+            self.assertEqual(partial.read_bytes(), b'new')
 
     def family(self, update):
         return {'base':Path('base.nsp'), 'updates':[(update,Path('update.nsp'))], 'dlc':[]}
@@ -61,19 +106,7 @@ class FrontendTests(unittest.TestCase):
         self.assertNotIn('--prepare-xcode',cmd)
         self.assertNotIn('pack_data.py',' '.join(cmd))
 
-    def test_ipa_all_in_one_checks(self):
-        entry = {'id':'0100000000000000','marker':'marker.bin'}
-        with tempfile.TemporaryDirectory() as tmp:
-            for embedded in (True,False):
-                out=Path(tmp)/'test.ipa'
-                with zipfile.ZipFile(out,'w') as z:
-                    z.writestr('Payload/Test.app/Info.plist',plistlib.dumps({'CFBundleIdentifier':'org.nxnative.0100000000000000','CFBundleExecutable':'Test'}))
-                    z.writestr('Payload/Test.app/Test',b'fixture')
-                    z.writestr('Payload/Test.app/msl/b-test/shader.metallib',b'fixture')
-                    if embedded: z.writestr('Payload/Test.app/romfs/marker.bin',b'fixture')
-                if embedded: frontend.verify_ipa(out,entry)
-                else:
-                    with self.assertRaises(ValueError): frontend.verify_ipa(out,entry)
+
 
     @unittest.skipUnless(platform.system() == 'Darwin', 'AppleScript requires macOS')
     def test_picker_initializes_without_readonly_property_error(self):
