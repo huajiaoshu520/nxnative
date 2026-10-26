@@ -73,7 +73,10 @@ def pick(kind):
     response = subprocess.run(['osascript', str(ROOT / 'dm/local_one_click/choose_inputs.applescript'), kind],
                               text=True, capture_output=True)
     if response.returncode:
-        raise ValueError('Selection cancelled or unavailable. No build started.')
+        detail = response.stderr.strip()
+        if '(-128)' in detail:
+            raise ValueError('Selection cancelled. No build started.')
+        raise ValueError('Cannot open the selection window: ' + (detail or str(response.returncode)))
     return Path(response.stdout.strip()).expanduser().resolve()
 
 

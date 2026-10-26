@@ -2,6 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 import plistlib
+import platform
 import subprocess
 import sys
 import tempfile
@@ -62,6 +63,18 @@ class FrontendTests(unittest.TestCase):
                 if embedded: frontend.verify_ipa(out,entry)
                 else:
                     with self.assertRaises(ValueError): frontend.verify_ipa(out,entry)
+
+    @unittest.skipUnless(platform.system() == 'Darwin', 'AppleScript requires macOS')
+    def test_picker_initializes_without_readonly_property_error(self):
+        result = subprocess.run(['osascript', str(ROOT / 'dm/local_one_click/choose_inputs.applescript'), '--self-test'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'ok')
+
+    def test_picker_preserves_actual_error(self):
+        response = subprocess.CompletedProcess([], 1, '', 'execution error: fixture (-10006)')
+        with patch.object(frontend.subprocess, 'run', return_value=response):
+            with self.assertRaisesRegex(ValueError, '-10006'):
+                frontend.pick('game')
 
     def test_plan_never_installs_or_builds(self):
         with tempfile.TemporaryDirectory() as tmp:
