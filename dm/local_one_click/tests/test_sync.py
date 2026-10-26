@@ -45,6 +45,11 @@ class SyncTests(unittest.TestCase):
         with self.assertRaises(RuntimeError): sync.merge('upstream')
         self.assertEqual(self.git('rev-parse','HEAD'),before)
         self.assertEqual(self.git('status','--porcelain'),'')
+    def test_runner_without_git_identity(self):
+        self.upstream();self.write('official.txt','updated\n');self.commit();self.fork()
+        self.git('config','--unset','user.name');self.git('config','--unset','user.email')
+        self.assertTrue(sync.merge('upstream'))
+        self.assertEqual(Path('official.txt').read_text(),'updated\n')
     def test_no_updates(self): self.assertFalse(sync.merge('upstream'))
     def test_dirty_checkout_rejected(self):
         self.write('untracked','data')

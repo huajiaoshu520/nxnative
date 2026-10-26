@@ -28,7 +28,9 @@ def merge(upstream):
         raise RuntimeError('Sync requires a clean checkout.')
     before = git('rev-parse', 'HEAD').stdout.decode().strip()
     git('rev-parse', '--verify', upstream)
-    outcome = git('merge', '--no-commit', '--no-ff', upstream, check=False)
+    outcome = git('-c', 'user.name=github-actions[bot]', '-c',
+                  'user.email=41898282+github-actions[bot]@users.noreply.github.com',
+                  'merge', '--no-commit', '--no-ff', upstream, check=False)
     merge_head = git('rev-parse', '--git-path', 'MERGE_HEAD').stdout.decode().strip()
     active = Path(merge_head).exists()
     if not active:
