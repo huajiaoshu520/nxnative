@@ -157,3 +157,12 @@ The game folder, prod.keys file and output folder pickers are unchanged.
 After publishing an IPA, the frontend also removes that build's `.idx` and
 `.idx.partial` packer indexes beside the temporary IPA. Other outputs and indexes
 are left untouched; failed builds retain their indexes for retrying.
+
+### First-launch approval
+
+After .NET setup and before game extraction, both launchers probe the bundled
+`dmsh_xlate` with its read-only `--source-sha` option. If macOS blocks it, approve
+that specific tool in System Settings > Privacy & Security > Open Anyway, complete
+the system confirmation, then press Return in Terminal to retry. Enter `q` to stop.
+The launcher does not remove quarantine attributes or change Gatekeeper settings.
+A failed preflight stops the build before game extraction or shader compilation.

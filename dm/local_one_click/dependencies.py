@@ -1,6 +1,7 @@
 """Dependency setup for the frontend; upstream build tools stay unmodified."""
 import importlib.util
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -25,6 +26,35 @@ def available(name):
         return importlib.util.find_spec(name) is not None
     except (ImportError, ModuleNotFoundError):
         return False
+
+
+def check_shader_translator(root):
+    """Trigger first-launch approval before extraction or shader compilation."""
+    tool = Path(root) / 'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate'
+    if not tool.is_file():
+        raise ValueError('Missing official shader translator: ' + str(tool))
+    print('Checking dmsh_xlate before building. If macOS blocks it, approve it in System Settings > Privacy & Security > Open Anyway.', flush=True)
+    while True:
+        try:
+            result = subprocess.run([str(tool), '--source-sha'], capture_output=True, text=True, timeout=30)
+            if result.returncode == 0 and re.fullmatch(r'[0-9a-fA-F]{16}', result.stdout.strip()):
+                print('dmsh_xlate is ready.', flush=True)
+                return
+            detail = (result.stderr or result.stdout or ('exit ' + str(result.returncode))).strip()
+        except (OSError, subprocess.TimeoutExpired) as error:
+            detail = str(error)
+        message = ('dmsh_xlate could not run: ' + detail[:1000] + '\n'
+                   '若 macOS 提示无法验证 dmsh_xlate：点“完成”，在“系统设置 → 隐私与安全性”中找到它，选择“仍要打开”并完成确认。\n'
+                   'If blocked by macOS, approve this tool in System Settings > Privacy & Security > Open Anyway. No system security settings are changed by this script.')
+        print(message, flush=True)
+        if not sys.stdin.isatty():
+            raise ValueError('Authorize dmsh_xlate if blocked, resolve any error above, then rerun the launcher. No game build has started.')
+        try:
+            answer = input('处理完成后按回车重试；输入 q 退出 / Press Return to retry, or q to quit: ')
+        except EOFError:
+            raise ValueError('Tool preflight cancelled; no game build has started.') from None
+        if answer.strip().lower() == 'q':
+            raise ValueError('Tool preflight cancelled; no game build has started.')
 
 
 def ensure(game_dir, launcher, args, mac=False):
@@ -63,6 +93,7 @@ def ensure(game_dir, launcher, args, mac=False):
     root = str(Path(runtime.split('[', 1)[1].rstrip(']')).parents[1])
     os.environ['DOTNET_ROOT'] = root
     os.environ['DOTNET_ROOT_ARM64'] = root
+    check_shader_translator(Path(launcher).resolve().parents[1])
     packages = [p for mod, p in [('lz4.block', 'lz4'), ('capstone', 'capstone'), ('fontTools', 'fonttools')]
                 if not available(mod)]
     if sys.version_info < (3, 14) and not available('backports.zstd'):
