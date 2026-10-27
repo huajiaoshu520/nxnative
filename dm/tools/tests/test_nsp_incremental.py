@@ -1,5 +1,6 @@
 """NSP script reuse across derived and provisional builds. Real fingerprints and mock tool runs; no game files, keys or Xcode needed."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -105,6 +106,21 @@ class DeriveProfile(Base):
     def test_edited_copy_is_kept_until_inputs_change(self):   # the stored digest is of the inputs, not of the derived files
         self.derive(); (self.pdir / 'pso_manifest.tsv').write_text('S\tk2\tpixel\n'); self.derive()
         self.assertEqual((self.pdir / 'pso_manifest.tsv').read_text(), 'S\tk2\tpixel\n')
+
+    def test_shader_only_derivation_preserves_builds_and_registered_patch_file(self):
+        source = self.src / 'game.tsv'
+        source.write_text(source.read_text() + f'build\tv65536\t1.1.0\tmain={BID2}\nshader_versions\tv0 v65536\n')
+        patch = self.src / 'patches.py'; patch.write_text(f'CUTS = {{"{BID}": []}}\n')
+        g = game.Game(self.src)
+        nsp.derive_profile(g, self.pdir, 'v65536', self.ex, ['main'], shader_only=True)
+        derived = game.Game(self.pdir)
+        self.assertEqual(derived.rows, g.rows)
+        self.assertEqual(derived.builds(), g.builds())
+        self.assertTrue((self.pdir / 'patches.py').is_symlink())
+        self.assertEqual((self.pdir / 'patches.py').resolve(), patch.resolve())
+        derived.table('shader_map.tsv').write_text('generated DLC shader rows\n')
+        nsp.derive_profile(g, self.pdir, 'v65536', self.ex, ['main'], shader_only=True)
+        self.assertEqual(derived.table('shader_map.tsv').read_text(), 'generated DLC shader rows\n')
 
     def test_missing_corrupt_and_duplicate_override_rows_derive_again(self):
         for change in ('missing', 'corrupt', 'override', 'indented override', 'truncated'):
@@ -224,6 +240,90 @@ class DeriveProfile(Base):
         self.assertFalse(game.Game(self.pdir).values('mem_alias'))
 
 
+class DlcOnlyShaders(Base):
+    def test_only_dlc_rows_and_facts_can_change(self):
+        tables = self.tmp / 'new-tables'; tables.mkdir()
+        base = 'pkg.bin\t8\tcompute\tbase\t/base.shader\n'
+        dlc = 'pkg.bin\t0\tvertex\tdlc\t/aoc/5/new.shader\n'
+        old_facts = 'base\t{"local":[8,1,1]}\ndlc\t{"other":1}\n'
+        self.src.joinpath('shader_map.tsv').write_text(base + dlc)
+        self.src.joinpath('shader_facts.tsv').write_text(old_facts)
+        g = game.Game(self.src)
+        cases = [
+            ('removed DLC and reindexed base', base.replace('\t8\t', '\t0\t'), 'base\t{"local":[8,1,1]}\n', True),
+            ('added DLC', base + dlc + 'pkg.bin\t9\tpixel\tnew-dlc\t/aoc/7/new.shader\n', old_facts, True),
+            ('shaderless DLC', base + dlc, old_facts, False),
+            ('changed base key', base.replace('\tbase\t', '\tother\t'), old_facts, False),
+            ('changed base source', base.replace('/base.shader', '/different.shader'), old_facts, False),
+            ('changed base facts', base, old_facts.replace('[8,1,1]', '[4,1,1]'), False),
+            ('no DLC difference', base + dlc, old_facts.replace('[8,1,1]', '[4,1,1]'), False),
+            ('invalid map', 'not a shader map\n', old_facts, False),
+        ]
+        for name, shader_map, facts, want in cases:
+            with self.subTest(name=name):
+                tables.joinpath('shader_map.tsv').write_text(shader_map)
+                tables.joinpath('shader_facts.tsv').write_text(facts)
+                self.assertEqual(nsp.dlc_only_shader_change(g, tables), want)
+
+
+class ComputeReaderAdditions(Base):
+    V, P, C = 'a' * 16, 'b' * 16, 'c' * 16
+    SOURCE = '/payload#Skinning#run.0'
+
+    def setUp(self):
+        super().setUp()
+        self.tables = self.tmp / 'new-tables'; self.tables.mkdir()
+        self.old = {'shader_map.tsv': f'vs_data.bin\t0\tvertex\t{self.V}\t/original-vs\nps_data.bin\t0\tpixel\t{self.P}\t/original-ps\n',
+                    'shader_facts.tsv': f'{self.V}\t{{"manual":1}}\n', 'shader_pairs.tsv': f'{self.V}\t{self.P}\n',
+                    'pso_pairs.tsv': '# no supplemental pairs\n'}
+        self.new = dict(self.old)
+        self.new['shader_map.tsv'] += f'cs_data.bin\t0\tcompute\t{self.C}\t{self.SOURCE}\n'
+        self.new['shader_facts.tsv'] += f'{self.C}\t{{"local":[8,1,1],"shared":0}}\n'
+        self.log = 'unity compute source: ' + json.dumps([self.C, self.SOURCE]) + '\n'
+        for n, text in self.old.items(): (self.src / n).write_text(text)
+
+    def check(self, tables=None, log=None):
+        for n, text in (self.new if tables is None else tables).items(): (self.tables / n).write_text(text)
+        return nsp.compute_reader_additions(game.Game(self.src), self.tables, self.log if log is None else log)
+
+    def test_only_new_reader_proven_compute_kernels_qualify(self):
+        self.assertTrue(self.check())
+        changed = dict(self.new, **{'shader_map.tsv': self.new['shader_map.tsv'].replace('\t0\tvertex', '\t9\tvertex')})
+        self.assertTrue(self.check(changed))  # Existing package indices may move; their identities cannot.
+        changed['pso_pairs.tsv'] = f'{self.V}\t{self.P}\n'
+        self.assertTrue(self.check(changed))  # Supplemental pass covers may be added beside the compute reader.
+        for what, tables, log in (
+            ('no additions', self.old, self.log),
+            ('no reader evidence', self.new, ''),
+            ('different source evidence', self.new, self.log.replace(self.SOURCE, '/other')),
+            ('malformed evidence', self.new, 'unity compute source: broken\n'),
+            ('wrong evidence type', self.new, 'unity compute source: {"key":"source"}\n'),
+            ('graphics addition', dict(self.new, **{'shader_map.tsv': self.new['shader_map.tsv'].replace('\tcompute\t', '\tvertex\t')}), self.log),
+            ('missing new facts', dict(self.new, **{'shader_facts.tsv': self.old['shader_facts.tsv']}), self.log),
+            ('extra facts', dict(self.new, **{'shader_facts.tsv': self.new['shader_facts.tsv'] + 'other\t{}\n'}), self.log),
+        ):
+            with self.subTest(what=what): self.assertFalse(self.check(tables, log))
+
+    def test_original_shaders_facts_and_pairs_cannot_change(self):
+        for what, name, text in (
+            ('removed shader', 'shader_map.tsv', self.new['shader_map.tsv'].split('\n', 1)[1]),
+            ('changed key', 'shader_map.tsv', self.new['shader_map.tsv'].replace(self.V, 'd' * 16)),
+            ('changed source', 'shader_map.tsv', self.new['shader_map.tsv'].replace('/original-vs', '/other')),
+            ('changed package', 'shader_map.tsv', self.new['shader_map.tsv'].replace('vs_data.bin', 'vs_other.bin')),
+            ('changed stage', 'shader_map.tsv', self.new['shader_map.tsv'].replace('\tvertex\t', '\tpixel\t')),
+            ('duplicate key', 'shader_map.tsv', self.new['shader_map.tsv'] + self.old['shader_map.tsv']),
+            ('changed fact', 'shader_facts.tsv', self.new['shader_facts.tsv'].replace('"manual":1', '"manual":2')),
+            ('removed fact', 'shader_facts.tsv', self.new['shader_facts.tsv'].split('\n', 1)[1]),
+            ('removed evidence pair', 'shader_pairs.tsv', '# none\n'),
+            ('changed evidence pair', 'shader_pairs.tsv', f'{self.P}\t{self.V}\n'),
+            ('compute in supplemental pair', 'pso_pairs.tsv', f'{self.V}\t{self.C}\n'),
+        ):
+            with self.subTest(what=what): self.assertFalse(self.check(dict(self.new, **{name: text})))
+        (self.src / 'pso_pairs.tsv').write_text(f'{self.V}\t{self.P}\n')
+        self.assertFalse(self.check())
+        self.assertTrue(self.check(dict(self.new, **{'pso_pairs.tsv': f'{self.V}\t{self.P}\n'})))
+
+
 class SplitShaders(Base):
     NAMES = ('shader_map.tsv', 'shader_facts.tsv', 'shader_pairs.tsv', 'pso_pairs.tsv')
 
@@ -233,18 +333,124 @@ class SplitShaders(Base):
         for f in ('dm/gfx/tools/shader_split.py', 'dm/gfx/tools/dmsh_chain.lock', 'dm/games/game.py', 'dm/ios/tools/ios_metal.py'):
             p = self.repo / f; p.parent.mkdir(parents=True, exist_ok=True); p.write_text('v1')
         self.pkg = self.tmp / 'work/shader/pkg'; self.logs = self.tmp / 'logs'; self.logs.mkdir()
-        self.splits, self.rows = 0, 'derived'
+        self.splits, self.rows, self.log = 0, 'derived', 'shaders: 3 (3 vertex)\n'
         cm = mock.patch.object(nsp, 'run', self.split); cm.__enter__(); self.addCleanup(cm.__exit__, None, None, None)
 
     def split(self, cmd, log, env=None, cwd=None, on_line=None):   # shader_split.py: the package and the four tables, deterministic for the same rows
-        self.splits += 1; out = Path(cmd[4]); out.mkdir(parents=True); (out / 'main.bin').write_bytes(self.rows.encode())
+        self.splits += 1; self.last_cmd = cmd; out = Path(cmd[4]); out.mkdir(parents=True); (out / 'main.bin').write_bytes(self.rows.encode())
         for n, t in zip(self.NAMES, cmd[5:]): Path(t).write_text(self.table(n))
-        Path(log).write_text('shaders: 3 (3 vertex)\n')
+        Path(log).write_text(self.log)
 
-    def table(self, n): return f'# split header\n{n}\t{self.rows}\n'
+    def table(self, n): return self.tables[n] if hasattr(self, 'tables') else f'# split header\n{n}\t{self.rows}\n'
 
-    def go(self, g, own=True, oodle=None):
-        return nsp.split_shaders(sys.executable, self.repo, [self.ex / 'RomFS'], [self.ex / 'ExeFS/main'], self.pkg, {}, self.logs, g, own, oodle)
+    def go(self, g, own=True, oodle=None, dlc_roms=(), derive_dlc=None, derive_compute=None):
+        return nsp.split_shaders(sys.executable, self.repo, [self.ex / 'RomFS'], [self.ex / 'ExeFS/main'], self.pkg, {}, self.logs, g, own, oodle, dlc_roms, derive_dlc, derive_compute)
+
+    def compute_addition(self):
+        self.tables = {'shader_map.tsv': 'vs_data.bin\t0\tvertex\tbase\t/original\ncs_data.bin\t0\tcompute\tadded\t/assets#Compute#run.0\n',
+                       'shader_facts.tsv': 'added\t{"local":[8,1,1],"shared":0}\n', 'shader_pairs.tsv': '# no pairs\n', 'pso_pairs.tsv': '# none\n'}
+        old = dict(self.tables, **{'shader_map.tsv': self.tables['shader_map.tsv'].split('\n', 1)[0] + '\n', 'shader_facts.tsv': '# none\n'})
+        for n, text in old.items(): (self.src / n).write_text(text)
+        self.log = 'unity compute source: ' + json.dumps(['added', '/assets#Compute#run.0']) + '\nshaders: 2 (1 vertex, 1 compute)\n'
+        return old
+
+    def test_compute_reader_derivation_preserves_profile_and_reuses_only_verified_inputs(self):
+        old = self.compute_addition(); g = game.Game(self.src)
+        patch = self.src / 'patches.py'; patch.write_text(f'CUTS = {{"{BID}": []}}\n')
+        def derive():
+            nsp.derive_profile(g, self.pdir, 'v65536', self.ex, ['main'], shader_only=True)
+            return game.Game(self.pdir)
+        promote, dlc = mock.Mock(side_effect=derive), mock.Mock()
+        first = self.go(g, own=False, derive_dlc=dlc, derive_compute=promote)
+        self.assertEqual((self.splits, promote.call_count), (1, 1)); dlc.assert_not_called()
+        self.assertTrue(self.pkg.with_name('pkg.compute.key').is_file())
+        self.assertFalse(self.pkg.with_name('pkg.dlc.key').exists())
+        derived = game.Game(self.pdir)
+        self.assertEqual(derived.rows, g.rows)
+        self.assertEqual((self.pdir / 'patches.py').resolve(), patch.resolve())
+        for n in self.NAMES:
+            self.assertEqual(g.table(n).read_text(), old[n])
+            self.assertEqual(derived.table(n).read_text(), self.tables[n])
+        self.assertEqual(self.go(g, own=False, derive_compute=promote), first)
+        self.assertEqual((self.splits, promote.call_count), (1, 2))
+        (self.repo / 'dm/gfx/tools/shader_split.py').write_text('new reader')
+        self.go(g, own=False, derive_compute=promote)
+        self.assertEqual((self.splits, promote.call_count), (2, 3))
+        verifier = self.tmp / 'comparison-v2.py'; verifier.write_text('changed comparison code')
+        with mock.patch.object(nsp, '__file__', str(verifier)):
+            self.go(g, own=False, derive_compute=promote)
+        self.assertEqual((self.splits, promote.call_count), (3, 4))
+        g.table('shader_map.tsv').write_text(old['shader_map.tsv'].replace('/original', '/changed'))
+        for _ in range(2):
+            with self.assertRaisesRegex(nsp.BuildError, 'differ from game profile'):
+                self.go(g, own=False, derive_compute=promote)
+        self.assertEqual((self.splits, promote.call_count), (5, 4))  # Stale proof cannot hide changes or failed checks.
+
+    def test_compute_reader_derivation_rejects_missing_evidence_and_does_not_promote_own_profiles(self):
+        self.compute_addition(); g = game.Game(self.src); promote = mock.Mock()
+        self.log = 'shaders: 2 (1 vertex, 1 compute)\n'
+        with self.assertRaisesRegex(nsp.BuildError, 'differ from game profile'):
+            self.go(g, own=False, derive_compute=promote)
+        promote.assert_not_called()
+        own = self.own()
+        self.go(own, derive_compute=promote)
+        promote.assert_not_called()
+
+    def test_dlc_only_derivation_is_incremental_and_keeps_registered_tables(self):
+        base = 'other.bin\t1\tvertex\tbase\t/base.shader\n'
+        old = {'shader_map.tsv': 'other.bin\t0\tvertex\tdlc\t/aoc/7/new.shader\n' + base,
+               'shader_facts.tsv': 'base\t{"fact":1}\ndlc\t{"fact":2}\n',
+               'shader_pairs.tsv': 'base\tdlc\n', 'pso_pairs.tsv': '# none\n'}
+        for n in self.NAMES: (self.src / n).write_text(old[n])
+        g = game.Game(self.src)
+        self.tables = {'shader_map.tsv': base.replace('\t1\t', '\t0\t'), 'shader_facts.tsv': 'base\t{"fact":1}\n',
+                       'shader_pairs.tsv': '# none\n', 'pso_pairs.tsv': '# none\n'}
+        def derive():
+            nsp.derive_profile(g, self.pdir, 'v65536', self.ex, ['main'], shader_only=True)
+            return game.Game(self.pdir)
+        promote = mock.Mock(side_effect=derive)
+        first = self.go(g, own=False, derive_dlc=promote)
+        self.assertEqual((self.splits, promote.call_count), (1, 1))
+        self.assertEqual(self.go(g, own=False, derive_dlc=promote), first)
+        self.assertEqual((self.splits, promote.call_count), (1, 2))   # proof of the strict non-DLC comparison is reused
+        self.assertEqual(game.Game(self.pdir).rows, g.rows)
+        for n in self.NAMES:
+            self.assertEqual(g.table(n).read_text(), old[n])
+            self.assertEqual(game.Game(self.pdir).table(n).read_text(), self.tables[n])
+        # A new DLC extraction, even of the same file sizes, must perform the strict comparison again.
+        dlc = self.tmp / 'aoc/7'; dlc.mkdir(parents=True); asset = dlc / 'shader'; asset.write_bytes(b'bytes')
+        self.go(g, own=False, dlc_roms=[dlc], derive_dlc=promote); self.assertEqual(self.splits, 2)
+        self.redump(asset)
+        self.go(g, own=False, dlc_roms=[dlc], derive_dlc=promote); self.assertEqual(self.splits, 3)
+        moved = dlc.with_name('8'); dlc.rename(moved)
+        self.go(g, own=False, dlc_roms=[moved], derive_dlc=promote); self.assertEqual(self.splits, 4)   # index changes count even if every file statistic is identical
+        verifier = self.tmp / 'comparison-v2.py'; verifier.write_text('changed comparison code')
+        with mock.patch.object(nsp, '__file__', str(verifier)):
+            self.go(g, own=False, dlc_roms=[moved], derive_dlc=promote); self.assertEqual(self.splits, 5)
+
+    def test_base_shader_mismatch_never_derives_for_dlc(self):
+        (self.src / 'shader_map.tsv').write_text('p.bin\t0\tvertex\tbase\t/base\np.bin\t1\tvertex\tdlc\t/aoc/7/shader\n')
+        (self.src / 'shader_facts.tsv').write_text('# none\n')
+        (self.src / 'shader_pairs.tsv').write_text('# none\n')
+        self.tables = {'shader_map.tsv': 'p.bin\t0\tvertex\twrong-base\t/base\n', 'shader_facts.tsv': '# none\n',
+                       'shader_pairs.tsv': '# none\n', 'pso_pairs.tsv': '# none\n'}
+        promote = mock.Mock()
+        with self.assertRaisesRegex(nsp.BuildError, 'differ from game profile'):
+            self.go(game.Game(self.src), own=False, derive_dlc=promote)
+        promote.assert_not_called()
+
+    def test_dlc_shaders_are_passed_and_invalidate_the_split(self):
+        g = self.own(); self.go(g); self.assertEqual(self.splits, 1)
+        dlc = self.tmp / 'work/aoc/7'; dlc.mkdir(parents=True)
+        asset = dlc / 'shader.archive'; asset.write_bytes(b'new shader')
+        self.go(g, dlc_roms=[dlc]); self.assertEqual(self.splits, 2)
+        self.assertEqual(self.last_cmd[-1], str(dlc))
+        # Extra content has no main: the base RomFS/main pairing remains unchanged.
+        self.assertEqual(self.last_cmd[2:4], [str(self.ex / 'RomFS'), str(self.ex / 'ExeFS/main')])
+        self.go(g, dlc_roms=[dlc]); self.assertEqual(self.splits, 2)
+        asset.write_bytes(b'updated DLC shader')
+        self.go(g, dlc_roms=[dlc]); self.assertEqual(self.splits, 3)
+        self.go(g); self.assertEqual(self.splits, 4)   # removing the DLC removes its shaders from the union
 
     def own(self):   # a derived profile with the empty tables, as main makes it
         self.derive(); g = game.Game(self.pdir); nsp.provisional_prep(sys.executable, self.repo, {}, self.logs, g); return g
@@ -311,6 +517,16 @@ class SplitShaders(Base):
         self.rows = 'other'; (self.ex / 'RomFS/b.bin').write_bytes(b'more'); self.go(g)
         self.assertEqual(g.table('shader_map.tsv').read_text(), self.table('shader_map.tsv'))
         self.go(g); self.assertEqual(self.splits, 2)
+
+    def test_unreadable_files_are_reported(self):   # the split leaves out a file no reader reads and goes on: a provisional build says so and packs, a registered profile stops
+        self.log = '[RED] 2 file(s) could not be read, their shaders are left out (first: /a.dict: not in the layout)\nshaders: 3 (3 vertex)\n'
+        g, said = self.own(), []
+        with mock.patch.object(nsp, 'say', said.append): self.go(g)
+        self.assertEqual(len([m for m in said if m.startswith('[RED] 2 file(s) could not be read')]), 1)
+        self.go(g); self.assertEqual(self.splits, 1)
+        self.assertIn('2 file(s) unreadable', nsp.PROG.end.call_args[0][0])   # the reused split still names them
+        for n in self.NAMES[:3]: (self.src / n).write_text(self.table(n))
+        with self.assertRaisesRegex(nsp.BuildError, r'^2 file\(s\) could not be read'): self.go(game.Game(self.src), own=False)
 
     def test_mode_is_in_the_key(self):   # the same files split as an own profile, then checked against them as a registered one
         g = self.own(); self.go(g)
@@ -383,6 +599,7 @@ class MacApp(Base):
     def test_packer_reports_reuse_and_first_pack_steps(self):
         t = self.tmp; out = t / 'Game.app'; packs = []
         def pack(cmd, log, env=None, on_line=None):
+            if not on_line: return   # the launcher settings (dm/games/settings.py)
             packs.append(cmd)
             (out / 'Contents/MacOS').mkdir(parents=True, exist_ok=True)
             (out / 'Contents/MacOS/dmhost').write_bytes(b'host')

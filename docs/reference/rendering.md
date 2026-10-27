@@ -4,6 +4,13 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 
 ## Textures and formats
 
+### Null textures in diagnostic logs
+
+- **Symptom:** clang reports null dereferences in `nvnWindowInitialize` and `clear_tex`; clearing a null texture crashes with `DM_NVN_PASSDUMP=1`.
+- **Cause:** window initialization checked the texture count but logged the first texture's dimensions without checking its pointer. Clear replay tolerated a null texture but its pass dump unconditionally read the texture serial.
+- **Fix:** check the first texture before logging its dimensions (`hle_nvn.c`) and log serial 0 for a null clear texture (`nvn_mtl.m`).
+- **Found on:** clang static analysis ([issue #424](https://github.com/seedds/nxnative/issues/424)); synthetic null-texture tests, with no gameplay failure reported.
+
 ### Texture objects copied into command records
 
 - **Symptom:** Metal aborts on a texture descriptor with an absurd size (`height (1869367126) greater than … 16384`).
@@ -133,6 +140,20 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Found on:** [OCTOPATH TRAVELER](../../dm/games/010057D006492000/README.md) (Unreal Engine 4.18 flags its streamed and CPU-loaded textures sparse).
 - **Check:** the map's guest bytes deswizzled in Python at 1 to 32 GOBs read right only at 8; a 512×512 RGBA8 sprite sheet only at 16; [Monster Hunter Rise](../../dm/games/0100B04011742000/README.md)'s packaged ASTC 6×6 textures (16 bytes per block) carry 8 in their layout. The 1- and 2-byte heights follow the same tile shapes and were not seen.
 
+### Sparse textures of 8- and 16-byte blocks: blocks at most 8 GOBs high
+
+- **Symptom:** crashes that move between runs (30–70% of boots, in the first minute): in the allocator, on bogus pointers, in unrelated threads. Unreal's purgatory proxy ([05-debugging](../agents/05-debugging.md)) finds freed 64 KB-aligned blocks modified; with the parked blocks read-only, the faulting store is a `memcpy` of texture mip data from the texture streamer into the buffer `RHILockTexture2D` returned.
+- **Cause:** with the automatic block height the host gave sparse textures the same block height as plain ones (16 GOBs for 96 or more block rows), so a 64 KB tile was 8 GOBs wide. For 8- and 16-byte blocks (DXT1, DXT5 and the like) the real layout uses blocks of at most 8 GOBs and so tiles 16 GOBs (1,024 bytes) wide: the game's pre-swizzled data for a 384×384 DXT5 level is 32 GOBs × two 8-GOB block rows, 0x40000 bytes, where the host's layout said 0x30000 (the padding sits at the end of each 8-GOB block in the dump). 4-byte texels keep 16-GOB blocks (a 1350×270 BGRA8 level is 88 GOBs × three 16-GOB block rows, 0x210000 bytes). Unreal's NVN RHI sizes its lock buffer from the host's level layout and copies the cooked level in at its own size, past the end of the buffer.
+- **Fix:** `nvn_tex.c` `sparse_tile_h` (see [Sparse textures take the block height of their 64 KB tile](#sparse-textures-take-the-block-height-of-their-64-kb-tile)): a sparse texture without a packaged layout and with 8 or 16 bytes per block takes 8-GOB blocks. `dm/gfx/tests/t_sparse_layout.c` checks 15 measured textures and Monster Hunter Rise's level offsets.
+- **Found on:** [Yoshi's Crafted World](../../dm/games/01006000040C2000/README.md): 9 streamed DXT5 textures (384×384 to 1920×912) overran their buffers by 0x8000–0x20000 bytes; after the fix none of 10,578 level copies did, and 10 of 10 boots ran clean.
+
+### Sparse textures smaller than a tile keep the automatic block height
+
+- **Symptom:** a small CPU-filled sparse texture shows part of its image beside fragments, cut off at the bottom (Yoshi's Crafted World's loading icon: the left half of a chalk drawing and two stray strokes).
+- **Cause:** a sparse texture smaller than one 64 KB tile in width or height is all mip tail, laid out as a plain texture with the [automatic block height](#automatic-block-height-truncates), but the host gave every sparse texture its tile's block height. The 192×160 DXT5 icon (12 × 5 GOBs, under the 16 × 8 GOBs of a 16-byte tile) is laid out in 4 GOBs and was read with 8; a 384×384 DXT1 (12 GOBs wide, under the 16-GOB tile width, 96 block rows) in 16, also read with 8. The storage sizes stay the same, so only the picture shows it.
+- **Fix:** `nvn_tex.c` `nvn_tex_layout` gives a sparse texture its tile's block height only when level 0 is at least one tile wide and high, the test `level_walk` uses for padding; the tile's shape for that test and for `nvn_tex_sparse_tiles` comes from the block size (`tile_shape_h`), not from the block height the texture got. `t_tex_layout.c` checks both block heights and the icon's tile shape.
+- **Found on:** [Yoshi's Crafted World](../../dm/games/01006000040C2000/README.md): the guest bytes of the icon and of the DXT1 deswizzled in Python read right only at 4 and 16 GOBs; its 384×384 DXT5 (24 GOBs wide, at least one tile) still reads right only padded to 32 GOBs at 8.
+
 ### Sparse textures bound from their first mapped level
 
 - **Symptom:** streamed textures read 0 (magenta on Monster Hunter Rise's title screen's clothes).
@@ -162,6 +183,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Cause:** the game builds new texture objects every frame over the same storage and never finalizes them; each new object allocated a new private Metal texture.
 - **Fix:** host textures are shared by `(pool, offset, description)`.
 - **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md).
+
+### IMAGE usage does not split texture storage
+
+- **Symptom:** a model has correct geometry, base colour and normals but appears as a black silhouette; deferred lighting's material-ID depth texture stays zero.
+- **Cause:** render and stencil-sampling descriptors name the same pool, offset and layout, differing only by `NVN_TEXTURE_FLAGS_IMAGE`. Including that usage flag in the storage key made two independent Metal textures; sampling read the empty one's stencil.
+- **Fix:** the storage key excludes `IMAGE`. Sampling shares the original texture. A writable image binding prepares any needed `ShaderWrite` usage before opening its encoder; the upgrade copies the pixels and replaces every name of the old texture. Upgrading while encoding arguments would end the active encoder underneath its caller.
+- **Check:** `t_stencil_view` writes both planes, reads through an IMAGE stencil descriptor and copies to separate storage under Metal validation; `t_upgrade_alias` checks image-write preparation and every live/finalized alias.
+- **Found on:** [Xenoblade Chronicles 3](../../dm/games/010074F013262000/README.md).
 
 ### Shared-storage entries taken over by a new texture
 
@@ -307,22 +336,31 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 
 ### Same-pass feedback read through a snapshot
 
-- **Symptom:** solid magenta blocks, exactly (255, 0, 255), hard-edged and aligned to the 16-pixel grid (16×16, sometimes two stacked): Super Mario 3D World showed them only on the iPhone; Captain Toad on a Mac, Apple M6, in about half the frames of the opening course, moving with the falling leaves.
+- **Symptom:** solid magenta blocks, exactly (255, 0, 255), hard-edged and aligned to the 16-pixel grid (16×16, sometimes two stacked): Super Mario 3D World showed them only on the iPhone; Captain Toad on a Mac, Apple M6, in about half the frames of the opening course, moving with the falling leaves. On an RG11B10F target (no alpha) the blocks are pure black or neon green, (0, 252, 0), and flicker, sometimes only part of a tile: Super Mario Bros. Wonder on an Apple M6 and an M1, most visible on the speech bubbles of dialogue.
 - **Cause:** a program writes an attachment while sampling it (agl's post-effect program writes the 1920x1080 RGB10A2 image as an attachment while sampling it). Writing and sampling one attachment within a render pass is undefined in Metal: the M4 Pro happens to return the old content, while the A20 Pro now and then returns whole 16×16 blocks as (1, 0, 1), probably blocks of the compressed render target caught mid-write. On the Switch the read returns the content from before the draw.
 - **Fix:** for the fragment shaders the profile's `feedback_snap` key lists, the host ends the pass before such a draw, copies the attachment's level and layer into a snapshot texture in the replay stream, and binds the snapshot for that draw (`fb_prepare` in `nvn_mtl.m`). The binding scan covers combined slots 0–127 and separate texture slots 128–255 (`NTEX`), using the argument encoder's handle lookup; an earlier bound of 128 silently skipped separate bindings even for a listed shader. A sampled view that spans more levels than the attachment's one is left as before with a red line.
 - **Check:** `make -C dm/gfx/tests GAME=<id> check_t_feedback` exercises the production snapshot and argument encoder at slots 0, 128 and 255. GPU readback must retain a red snapshot after the original attachment is overwritten green, then read the green original on the next draw. The old slot bound fails 10 of 56 checks; the corrected bound passes all 56 with Metal API validation on the M4 Pro.
 - **Found on:**
   - [Super Mario 3D World + Bowser's Fury](../../dm/games/010028600EBDA000/README.md): `DM_NVN_MAGSCAN` on the A20 Pro found the blocks first in the 1920×1080 RGB10A2 composite (`ser=30`) in World 1-1, in the pass whose shader `66a71a3081b91b9a` renders into that texture while sampling it. They kept appearing with the sparkle particle `5e4de7561c670fee` dropped, so that earlier suspect (picked by position) is not the cause. `feedback_snap` lists `66a71a3081b91b9a` and `30e3ccb0bd304ead` (which samples a G-buffer target of its own pass on the title screen); in 1-1 that is one 8 MB copy per frame. `3e8567da37eb28a1` renders level 1 of a texture while its view covers levels 0–4 (mip-chain passes) and keeps the red line. The source said the fix was in place and waiting for a device run when written; the README lists the game as tested and playable on the iPhone.
   - [Captain Toad: Treasure Tracker](../../dm/games/01009BF0072D4000/README.md): agl's post-effect program 987 (`54f58a7cab608766`, the same program as 3D World's `66a71a3081b91b9a` in another build); `DM_NVN_FB_SNAP=all` cleared every frame and named this one shader, now in the profile's `feedback_snap`.
-- **Note:** doing it for every shader is too expensive: Breath of the Wild has over a thousand draws a frame that sample the G-buffer of their own pass (Mac frame time 16.6 → 36.6 ms), and Mario Wonder's submit time went from 1.4 to 4.0 ms. Those games' feedback draws (Mario Wonder `a7e5c6fd501cf21f` and `22a61cb1ec732aef` on its RG11B10F scene; BotW `4d3d5a4408c2e8d9`, `753d0169ae3ce4f0` and others on its 1600×900 G-buffer) had shown no blocks on the iPhone; if they do, `DM_NVN_MAGSCAN` names the pass and the shader goes into that profile's `feedback_snap`. `DM_NVN_FB_SNAP=all` snapshots every such draw.
+  - [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md#rendering): black and green blocks on the Mac (Apple M6; an M1 in [seedds/nxnative#377](https://github.com/seedds/nxnative/issues/377)) from its two feedback draws `a7e5c6fd501cf21f` and `22a61cb1ec732aef` on the RG11B10F scene, the same keys in v0 and 1.2.1, which had shown nothing on the iPhone. Screenshots with a flicker detector: v0's opening course 6 of 160 frames with blocks before, 0 of 150 with both in `feedback_snap`; 1.2.1's Badge House dialogue 23 of 158 before, 0 of 158 after.
+- **Note:** doing it for every shader is too expensive: Breath of the Wild has over a thousand draws a frame that sample the G-buffer of their own pass (Mac frame time 16.6 → 36.6 ms), and Mario Wonder's submit time went from 1.4 to 4.0 ms. Breath of the Wild's feedback draws (`4d3d5a4408c2e8d9`, `753d0169ae3ce4f0` and others on its 1600×900 G-buffer) had shown no blocks on the iPhone; if they do, `DM_NVN_MAGSCAN` names the pass and the shader goes into that profile's `feedback_snap`. `DM_NVN_FB_SNAP=all` snapshots every such draw; with a screenshot detector it shows whether the blocks come from such a draw, and a pass dump (`N … same-pass feedback sampling` lines after the draw's `K` keys) names the shaders.
 
 ### Lower-left window origin
 
 - **Symptom:** text a game renders into textures for the title and the menus comes out upside down, while the scene looks right.
 - **Cause:** a game that never calls `nvnDeviceSetWindowOriginMode` keeps NVN's default, lower-left (OpenGL), where NDC y = -1 lands on a render target's first memory row. Read as upper-left, every texture the game renders and samples came out flipped and cancelled out, but not the text, and the game copies the frame with `MIRROR_Y`.
-- **Fix:** viewport and scissor rectangles, fragment coordinates, copies and texture coordinates address the same memory rows in both conventions, so the host only flips the direction inside the viewport (negative viewport height), reverses the front-face winding, and flips the window image at present and in raw screenshots (`g_origin_ll` in `nvn_mtl.m`).
+- **Fix:** viewport and scissor rectangles, fragment coordinates, copies and texture coordinates address the same memory rows in both conventions, so the host flips the direction inside the viewport (negative viewport height) and flips the window image at present and in raw screenshots (`g_origin_ll` in `nvn_mtl.m`). Facing also follows the [raster flip captured at queue initialization](#queue-initialization-captures-the-raster-origin).
 - **Found on:** [The Legend of Zelda: Link's Awakening](../../dm/games/01006BB00C6F0000/README.md); the six games before it all switch to upper-left.
 - **Note:** the window's Y-direction system register under this origin is open ([Open: the window Y-direction register `SR_Y_DIRECTION`](shaders.md#open-the-window-y-direction-register-sr_y_direction)); the OpenGL layer renders through this origin ([GL orientation through the lower-left origin](#gl-orientation-through-the-lower-left-origin)), and Absolum combines it with a viewport swizzle ([Viewport swizzles applied as a flipped viewport](#viewport-swizzles-applied-as-a-flipped-viewport)).
+
+### Queue initialization captures the raster origin
+
+- **Symptom:** geometry appears inside out and almost black; a fullscreen indirect-lighting triangle is entirely culled even though its vertex data and polygon state match the game.
+- **Cause:** NVN emits `SET_WINDOW_ORIGIN.FLIP_Y` into a queue's initial GPU state. `DeviceSetWindowOriginMode` only changes the device field that later viewport construction reads; it does not rewrite an existing queue's raster flip. Deriving Metal winding from the current device origin loses this distinction when the game creates a queue before changing the origin. Reversing winding globally fixes that sequence but breaks games that set their origin first.
+- **Fix:** `queue_t.origin_ll` captures the device origin in `nvnQueueInitialize`. Each submission selects that queue's raster origin under the submission lock. Metal winding uses this captured origin; viewport direction and presentation keep using the device origin. The full-coverage proof also accounts for the difference between these origins, and for a negative-Y viewport swizzle.
+- **Check:** `t_queue_origin` alternates two queues created with different origins on one device. GPU readback checks CW/CCW triangles, both current device origins, every cull mode, `front_facing`, negative-Y swizzles and the full-coverage proof: 389 checks pass with direct and deferred Metal encoding; restoring the previous winding expression fails 48. The complete Metal suite passes. Mario Wonder's full smoke route passes with the fix.
+- **Found on:** [Xenoblade Chronicles 2](../../dm/games/0100E95004038000/README.md#rendering), with native SDK initialization evidence and the comparison with Mario Wonder recorded there.
 
 ### The residency set committed before a present
 
@@ -382,6 +420,13 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Fix:** the builder's mode now goes to the texture (`tex_t.stencil`), whose sampling view is the `X32_Stencil8` one a stencil-mode texture view already got.
 - **Found on:** [DRAGON QUEST VII Reimagined](../../dm/games/0100A9D01C446000/README.md) (the character occlusion mask, `edbfc7a088be545e`).
 
+### Conservative rasterization remains unimplemented
+
+- **Symptom:** `[nvn] SetConservativeRasterEnable on: ignored by host for now`, followed by `[RED] NVN unimplemented function called: nvnCommandBufferSetConservativeRasterDilate`.
+- **Cause:** `hle_nvn.c` ignores the enable setter and has no implementation for the dilation setter. The requested raster coverage state never reaches Metal.
+- **Fix:** **Open.** Neither setter has been implemented. The opening indoor scene renders and accepts input, but the visual contribution of the missing coverage state has not been isolated. The diagnostic remains visible.
+- **Found on:** [Pokémon Scarlet](../../dm/games/0100A3D008C5C000/README.md#open) (1.0.0, the first playable bedroom).
+
 ## Vertex input and draws
 
 ### Integer vertex inputs
@@ -414,6 +459,13 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Check:** `dm/gfx/tests/t_pull.m` (the words against Metal's fetch and the CPU conversion), `t_pull_inv.m` (a depth prepass with one pipeline and depth-equal with the other), `test_dmsh_pull.py`; `dm/ios/tests/test_profile_pack.py` packs tiny fixtures through the actual archive step and checks profile defaults, explicit overrides and an IPA with a pipeline archive in the ZIP.
 - **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md): draws that waited for their pipeline on a cold start.
 
+### Float32 vertex padding through integer inputs
+
+- **Symptom:** a fullscreen post-process draw writes no color, then a later blur composite darkens scenery while the character remains visible.
+- **Cause:** reinterpreting Float1/2/3 as UInt1/2/3 preserves supplied bits but pads missing `w` with integer `1`. A shader that bitcasts the input back to float receives `w=1.4e-45`, rather than `1.0`, and can clip the whole draw. Float4 has no missing components.
+- **Fix:** short float32 vectors use the existing float shadow input, or CPU expansion with float `(0,0,0,1)` defaults when shadows are unavailable or disabled. Float4 keeps direct reinterpretation. `t_float_pad` checks signed/unsigned GPU fetch, CPU fallback and Float4 controls.
+- **Found on:** [Xenoblade Chronicles: Definitive Edition](../../dm/games/0100FF500E34A000/README.md) (the game profile is a separate, pending contribution).
+
 ### CPU conversion of vertex attributes the input type cannot take
 
 - **Symptom:** `Vertex attribute m_36(5) of type uint4 cannot be read using MTLAttributeFormatHalf2` (draws dropped: black silhouettes); UVs collapse onto one texel (flat tan characters); vertices far out of view (negative 16-bit values widened with zeros).
@@ -436,6 +488,13 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Cause:** the host bound NVN stream *n* to Metal vertex buffer 16 + *n*, but Metal has slots 0–30 only (30 is the host's constant fallback), so stream 15 went to 31.
 - **Fix:** translated shaders use only `buffer(0)`, so streams 14 and 15 now go to slots 14 and 15 (`VB_SLOT`).
 - **Found on:** [13 Sentinels: Aegis Rim](../../dm/games/01003FC01670C000/README.md) (a minute and a half into the prologue).
+
+### Vertex streams at addresses that are not 4-byte aligned
+
+- **Symptom:** Scaleform fills come out as solid white or light grey sheets over the whole screen, hard-edged triangles and bands, and the menu text is missing (a language list or a title screen that is all white behind its button prompt).
+- **Cause:** Metal reads a vertex buffer only from a 4-byte-aligned address: bound at an address 2 mod 4, every vertex was read 2 bytes early. NVN takes any address, and Scaleform's vertex streams (16-byte vertices: two RGBA8 attributes and an RG32F position) sit at addresses such as `…6d6a`. The positions became garbage spanning the screen, and the shapes, white with alpha 0.2–0.7 by their colour transforms, overlapped many times.
+- **Fix:** `bind_vbufs` copies a stream whose address is not 4-byte aligned into the submission's arena (`vbuf_unaligned`; one copy per address and size until guest writes or pool mappings change, up to 64 MB) and binds the copy. CPU copies require a host-readable, non-sparse range without pending GPU writers in this or an earlier submission; otherwise `vbuf_prepare` encodes an ordered GPU copy before the render encoder, including feedback and geometry captures. Submissions and pool mappings invalidate copies; buffer and shader writes invalidate the copies they can overlap, so unrelated uniform updates keep their vertex copies. The log's `vertex bindings` line counts the copies; `t_vbuf` checks byte-aligned readbacks, reuse, queued writes, writes between draws and pool replacement. The index buffers at addresses 2 mod 4 (16-bit indices) needed nothing.
+- **Found on:** Batman: Arkham Knight (`0100ACD0163D0000`; its profile and note are in a PR of their own) (Scaleform GFx; 2–13 copies of 3–18 MB a frame in the menus and at the title, which the draws' vertex ranges could narrow). With the copy the language menu and the title screen draw right.
 
 ### Programs bound per stage
 
@@ -500,16 +559,35 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Found on:** [Monster Hunter Rise](../../dm/games/0100B04011742000/README.md).
 - **Note:** the replay used to commit its work and wait for the GPU before the first such draw after each GPU write, then read the count on the CPU (`mdi_wait`, now only for quads, fans and 8-bit indices). In Kamura Village that wait held the submitting thread 14 of its 20 ms a frame on an iPhone (36–54 fps). On the Mac the same scene's submit took 20 ms of wall time for 6.1 ms of work, and now 5.1 ms, all of it work.
 
+### Rasterizer discard preserves vertex storage writes
+
+- **Symptom:** the HUD and sky render but the battle's characters and terrain are absent; the replay logs `draw skipped: rasterizer discard` between model draws.
+- **Cause:** the replay returned from every discarded draw without active transform feedback. Rasterizer discard only suppresses rasterization: vertex storage writes and atomics still execute. Metal additionally requires a void-returning vertex function when rasterization is disabled.
+- **Fix:** the offline builder adds `main0_discard` to vertex shaders with writable reflected bindings. It retains the original body and early returns and drops only the stage outputs. Replay uses that entry in a separate pipeline with no fragment stage and rasterization disabled, with the ordinary array/indexed/instanced draw machinery and GPU-write tracking. Switching discard marks the pipeline dirty; discarded draws cannot prove an attachment fully overwritten. Pure vertex shaders with neither storage writes nor active feedback can still be skipped. Transform feedback retains its capture entry.
+- **Check:** `t_rast_discard` passes 19 checks under Metal validation: array/indexed storage writes despite an empty scissor and both faces culled, two instances, unchanged clear colours, normal rendering between two discard phases, and an ordered storage-write consumer. `test_discard.py` compiles a generated entry with side effects before two different returns for Mac and iOS.
+- **Found on:** [Xenoblade Chronicles 3](../../dm/games/010074F013262000/README.md#files-and-shaders); its note tracks the gameplay verification.
+
+### Primitive barriers order vertex storage writes
+
+- **Symptom:** exploding meshes and displaced model parts after vertex-only work; native post-vertex captures can contain valid positions for some meshes while other palettes are incorrect.
+- **Cause:** `ORDER_PRIMITIVES` was omitted from the pass-splitting condition after shader storage writes. A primitive barrier orders earlier vertex work before later vertex work, including its storage writes. Metal does not supply that ordering between draws in one render encoder. Xenoblade Chronicles 3 uses barrier `0x21` after vertex shaders update its bone matrices; fragment-only barrier handling left dependent vertex work unordered.
+- **Fix:** a primitive barrier after shader writes ends the render pass, as fragment barriers already do. The next encoder's full consumer barrier supplies the required visibility.
+- **Check:** `t_rast_discard` passes 19 GPU checks under Metal validation, including a 4,096-vertex storage producer followed by a primitive barrier and a vertex consumer in the same submission.
+- **Found on:** [Xenoblade Chronicles 3](../../dm/games/010074F013262000/README.md#files-and-shaders); `boot24barrier` removes the exploding meshes.
+
 ### Transform feedback captured by a vertex entry point
 
 - **Symptom:** characters collapsed into one thin spike (vertex streams read from feedback buffers that were never written); a character covered by a solid box while it moves (its fur shells pulled toward lagged positions that were never written); a pass dump shows draws with a vertex shader and no fragment shader (`fs=-`) before the draws that read them, and `Y tf begin … written 0/0/0/0` with no `T … tf capture` line.
 - **Cause:** a game that skins on the GPU with transform feedback: a vertex-only program runs under `SetRasterizerDiscard` between `BeginTransformFeedback` / `EndTransformFeedback` and writes into feedback buffers that later draws read as vertex streams. The host ignored all of it, so the streams kept whatever was there. Metal has no feedback stage.
 - **Fix:**
-  - the layout comes from the program's control section, where the NVN driver would read it (`tf_layout` in `dmsh_build.py`): +0x6dc u16 strides, +0x6e8 per buffer the number of captured outputs, +0x6ec buffer count, and per buffer b the captured outputs (0x20 + n, one byte each) from +0xdc + 0x80 b and their component counts (one byte each) from +0x4dc + 0x80 b, each captured from x on and packed in that order. A form that does not add up (the components times 4 must make the stride) gets a red line and no capture entry point, so one shader cannot stop a game's build;
-  - such a vertex shader gets a third entry point, `main0_tf` (`vs_tf`): the same body, returning nothing, storing the captured components as their bits into `device uint *` buffers at Metal vertex buffer slots 8–11 (`TF_SLOT`), indexed by vertex ID, a buffer's outputs one after another within the vertex's stride; the reflection lists `entry_tf` and `tf_strides`;
-  - the binds, begin / end / pause / resume and rasterizer discard are records (`OP_TF_BIND`, `OP_TF_STATE`, `OP_RAST_DISCARD`). At replay a draw under rasterizer discard runs `tf_draw` in `nvn_mtl.m`, and so does a rasterized draw while feedback is active and its vertex shader has a capture entry point (feedback records every draw between Begin and End; the draw then rasterizes as before): with feedback active and a capture entry point, an encoder of its own with no attachments, a pipeline with rasterization off, the buffers bound at their current offset less first × stride, the offsets advanced and the written ranges queued as GPU writes (`pend_add` kind 4); without feedback the draw rasterizes nothing, as on the GPU (it used to draw, depth writes included). Only plain array draws are captured; indexed, indirect or instanced ones give a red line. `DM_NVN_PASSDUMP` prints the records as `Y tf …` and each capture as a `T … tf capture` line.
+  - the layout comes from the program's control section (`tf_layout` in `dmsh_build.py`): +0x6dc u16 strides, +0x6e8 per-buffer output counts, +0x6ec buffer count, and per buffer b the output locations (0x20 + n) at +0xdc + 0x80 b and matching **byte** component counts at +0x4dc + 0x80 b. Multiple outputs are interleaved in that order. Unknown forms get a red line and no capture entry;
+  - `main0_tf` (`vs_tf`) retains the body and stores the output bits into Metal vertex buffers 8–11, with the GPU-prepared capture record at buffer 14. The reflection lists `entry_tf` and `tf_strides`. Geometry programs give their output reader the same entry; it gathers the packed point/line/triangle indices while writing linear feedback records;
+  - `nvn_feedback.inc` keeps offsets and counts on the GPU. Begin clears them; End/Pause save them in the game's opaque 32-byte control buffer; Resume restores them. A compute helper bounds each capture by all active streams and complete primitives. `DrawTransformFeedback` uses the saved count as indirect array-draw arguments. Captures, counter copies and consuming draws follow encoder ordering, and captured ranges enter GPU-write tracking. Plain vertex capture supports array point/line/triangle lists with or without rasterizer discard, including instances; indexed/indirect vertex capture remains open. Geometry capture uses the existing general assembly and compute path. `DM_NVN_PASSDUMP` prints the records as `Y tf …` and array captures as `T … tf capture`.
+- **Check:** `test_transform_feedback.py` compiles generated vertex/geometry entries for Mac and iOS; `t_transform_feedback` checks interleaving, saved offsets, resume, bounded capture, GPU-produced geometry counts, complete primitives and a following draw that consumes the saved count in the same submission.
 - **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md): the character preview. 28 such shaders (e.g. `681cc42e48c0bbc0` in the `special/imgui.trsha` pack; skin indices in attribute 12, weights in 13) write positions (location 0 xyz, 12 bytes a vertex) and packed normal and tangent bits (locations 1 and 2, x only, 4 bytes) into three feedback buffers; the character draws read them as vertex streams 0–2 (`RGB32F`, `RGB10A2SN`, `RGB10A2SN`). Every buffer in this game holds one output from x on (strides 12/4/4, 12/12/12, 12/4, 12). The game draws these while its frame target is bound. The pass dump showed a pass of 19 draws with `fs=-` before the character pass. Tears of the Kingdom's 14,766 and Ace Attorney's 2,475 vertex shaders have no feedback at all.
   - [Donkey Kong Country: Tropical Freeze](../../dm/games/0100C1F0051B6000/README.md): DK's fur. While DK moved, his fur shells (an instanced draw, `648304c43bbe3463` / `5b5ffba62bca9e0a`, three shells on the body's index buffer) covered him as one solid box. Each frame a vertex-only draw (`6979dd3cdbd62373` / `7dcdaed991c74bfe`, 3,400 vertices) captures the fur's lagged positions into one buffer, two outputs per vertex (xyz each, stride 24; output count 2, component bytes `03 03`), and the shells read them as vertex attribute 6. Two things kept the buffer at zero (`DM_NVN_KEYDUMP=5b5ffba62bca9e0a`: stream 6 held zeros and `2.3e24`): the old one-output rule rejected the layout (`[RED] … transform feedback buffer 0 has a layout of unknown form`), and the game draws the capture with rasterization on (no fragment shader, colour mask 0, no `SetRasterizerDiscard`), which the host did not capture. Four of its 11,644 vertex shaders have this form; over Z-A's and this game's 23,277 vertex shaders together, the old and new readings give identical layouts and capture code for all 28 shaders the old rule took.
+
+- **Found on:** [Xenoblade Chronicles 3](../../dm/games/010074F013262000/README.md#files-and-shaders): effect vertex and geometry programs use interleaved outputs, including eleven outputs in a 172-byte stream, and draw from saved feedback counts.
 
 ### Helper encoders end the open copy encoder first
 
