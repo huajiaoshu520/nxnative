@@ -71,6 +71,8 @@ def shader_patch(g):
     path = patch_file(g, 'shader_patch', '.py')
     if path is None: return lambda src: src
     spec = importlib.util.spec_from_file_location('game_shader_patch', path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f'{g.id}: cannot load shader patch: {path}')
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
     return module.fragment
 
@@ -119,6 +121,8 @@ def by_build(main_id):   # the profile whose build rows register this main build
 
 def header(g):
     validate_patches(g)
+    draw_patch = patch_file(g, "nvn_draw_patch", ".h")
+    draw_include = os.path.relpath(draw_patch, HERE.parent / "gfx/nvn") if draw_patch is not None else None
     """the host's game_profile.h: the profile constants the host uses, as macros"""
     q = lambda s: '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
     mods = g.words('modules')
@@ -197,7 +201,7 @@ def header(g):
          f'#define DM_GAME_OPMODE {int(om == "console")}',
          f'#define DM_GAME_PERF_BOOST {int(pm == "boost")}',
          f'#define DM_GAME_FEEDBACK_SNAP {q(" ".join(fbs))}',
-         *([f'#define DM_GAME_DRAW_PATCH {q(os.path.relpath(patch_file(g, "nvn_draw_patch", ".h"), HERE.parent / "gfx/nvn"))}'] if g.get('nvn_draw_patch', '') else []),
+         *([f'#define DM_GAME_DRAW_PATCH {q(draw_include)}'] if draw_include is not None else []),
          f'#define DM_GAME_TEX_FLUSH_UPLOAD {int(tfu == "on")}',
          f'#define DM_GAME_RENDER_COND {int(rcd == "on")}',
          f'#define DM_GAME_TEX_DIRTY_UPLOAD {int(tdu == "on")}',
