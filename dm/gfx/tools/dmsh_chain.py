@@ -47,14 +47,15 @@ def load_game():   # the current game profile (DM_GAME), only for what needs one
 
 def profile_rows(g):   # the profile keys that change how a shader is built (nvn_*, shader_*)
     rows = ''.join(f'{k}\t{chr(9).join(v)}\n' for k, v in g.rows if k.startswith(('nvn_', 'shader_'))).encode()
-    import game
-    path = game.patch_file(g, 'shader_patch', '.py') if any(k == 'shader_patch' for k, _ in g.rows) else None
+    if not any(k == 'shader_patch' for k, _ in g.rows): return rows
+    sys.path.insert(0, os.path.join(GFX, '../games')); import game
+    path = game.patch_file(g, 'shader_patch', '.py')
     return rows + (b'\0shader_patch_source\0' + path.read_bytes() if path else b'')
 
 
 def game_shader_patch(g):
-    # load_game imports the shared game-profile module first.
-    import game
+    # This helper is also called independently of load_game.
+    sys.path.insert(0, os.path.join(GFX, '../games')); import game
     shader = game.patch_file(g, 'shader_patch', '.py')
     replay = game.patch_file(g, 'nvn_draw_patch', '.h')
     if bool(shader) != bool(replay):

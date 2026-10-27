@@ -45,6 +45,27 @@ class Isolation(unittest.TestCase):
   with tempfile.TemporaryDirectory() as td:
    p=pathlib.Path(td);(p/'game.tsv').write_text('shader_patch\t../patch.py\n')
    with self.assertRaises(ValueError):game.shader_patch(game.Game(p))
+ def test_fresh_interpreter_does_not_require_load_game(self):
+  import subprocess
+  tools = pathlib.Path(__file__).resolve().parents[1] / 'tools'
+  profile = pathlib.Path(__file__).resolve().parents[2] / 'games/01006F8002326000'
+  script = """
+import sys, types, pathlib
+sys.path.insert(0, sys.argv[1])
+import dmsh_chain
+assert 'game' not in sys.modules
+assert dmsh_chain.profile_rows(types.SimpleNamespace(rows=[])) == b''
+assert 'game' not in sys.modules
+profile = pathlib.Path(sys.argv[2])
+rows = [line.split('\\t') for line in (profile/'game.tsv').read_text().splitlines() if line and not line.startswith('#')]
+values = {row[0]: row[1:] for row in rows}
+g = types.SimpleNamespace(id=profile.name, rows=[(row[0],row[1:]) for row in rows], table=lambda n: profile/n, get=lambda k,d='': '\\t'.join(values[k]) if k in values else d)
+assert b'shader_patch_source' in dmsh_chain.profile_rows(g)
+sys.modules.pop('game', None)
+sys.path[:] = [p for p in sys.path if not p.endswith('/games')]
+assert callable(dmsh_chain.game_shader_patch(g))
+"""
+  subprocess.run([sys.executable,'-I','-c',script,str(tools),str(profile)],check=True)
  def test_patch_source_invalidates_profile_digest(self):
   import dmsh_chain
   with tempfile.TemporaryDirectory() as td:
