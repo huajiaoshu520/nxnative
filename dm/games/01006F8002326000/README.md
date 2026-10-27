@@ -40,6 +40,12 @@ On the Mac: a new game through Tom Nook's counter (name entry on the game's own 
 - The in-flight movie `Movie/OpeningMovie.webm` is VP9 1080p with Vorbis, demuxed by `movie::Extractor` and decoded on the host (`hle_movie.c`).
 - **Resolved: the movie showed as a black screen with the loading icon, one picture every few seconds, while its sound decoder kept up.** The player holds every output it is offered (16 of 16 video, 59 of 64 audio), so how far its extractor can get ahead of the picture on screen is the video slots plus the 4 queued packets. With 8 video slots that was 0.4 s, and the audio behind the next video packet, whose clock the player follows, ran dry: 86 pictures in 25 s. With 16 or 32 slots all 1,960 play at 30 fps. A video decoder now has 16 (`MD_NOUT_VIDEO`); a slot is allocated when first used, so the 8 more cost 24 MB of NV12 at 1080p only in a player that holds them all.
 
+## Island-map alpha test (proposed)
+
+Issue #73 reports corruption in the full island map. This profile opts into `shader_patch map_alpha.py` and `nvn_draw_patch map_alpha.h`; both keys must be present together. The files implement the missing alpha-test comparison using the game's recorded function and reference, rather than replacing a map texture or disabling a draw. See [Fixed-function alpha tests](../../../docs/reference/rendering.md#fixed-function-alpha-tests-profile-opt-in) for the mechanism and validation limits.
+
+The patch was used in a separate ACNH compatibility runtime; this submission ports it to the current upstream tree. Metal replay tests pass on Apple M4. A full shader rebuild and in-game map comparison on this upstream revision remain to be done. Remove both profile keys and rebuild the shaders and host for an unpatched comparison. This proposal contains no custom launcher, touch layout, external-data loader or Duo display changes.
+
 ## Files and shaders
 
 - RomFS: 97,997 zstd files (`.zs`, most of them models), BWAV sound, a few Yaz0 SARC archives (`.szs`). The profile's `romfs_marker` is `Movie/OpeningMovie.webm`.

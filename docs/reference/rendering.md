@@ -373,6 +373,15 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 
 ## Blend, depth and stencil
 
+### Fixed-function alpha tests (profile opt-in)
+
+- **Symptom:** the full island map in Animal Crossing: New Horizons contains opaque patches where alpha-tested fragments should be rejected (issue #73).
+- **Cause:** the replay records `ColorStateSetAlphaTest` but never applies its comparison, and `SetAlphaRef` only logs a warning. Metal has no fixed-function alpha-test state.
+- **Fix proposed:** an opt-in profile owns `map_alpha.py` and `map_alpha.h`. The offline transform tests colour-0 alpha at every fragment exit, after colour computation and before blending/depth writes. Replay snapshots the comparison and reference into a fenced arena allocation and binds fragment buffer 30 before argument-buffer reuse. A potentially rejecting alpha test also prevents full-coverage load elision. Profiles without both patch keys keep their original shader source, reference-call behaviour and draw bindings.
+- **Check:** `test_profile_alpha.py` covers transformation and profile isolation; `make -C dm/gfx/tests GAME=01006F8002326000 check_t_alpha` exercises all eight comparisons, changing references, argument reuse and the output-mapping variant with Metal Validation (1,165 checks on Apple M4).
+- **Found on:** [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md). This is deliberately opt-in pending wider validation; the latest upstream build has not yet been tested along an in-game route. Synthetic replay checks do not establish that every map artefact is fixed.
+
+
 ### No writes to colour outputs the shader does not write
 
 - **Symptom:** undefined values blended into attachments the fragment shader leaves alone.

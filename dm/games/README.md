@@ -198,3 +198,7 @@ These are not profile keys: the tools read them from the game files each time, b
 4. **Shaders.** `DM_GAME=<id> [IOSOUT=…] dmsh_build.py <pkg> <cache>`, with a cache directory of the game's own. A full build also writes `c1_full.tsv` and `cb_extent.tsv` (local files, not committed). The chain version needs nothing: it is the same for every game.
 5. **Host bring-up.** Run `make -C dm/host GAME=<id>`, then work through the bring-up loop in docs/agents. Code that only fits one game is gated by its build ID (`dm_main_build()`), never left to run on every game.
 6. **IPA.** Use `GAME=<id> dm/ios/tools/build_ipa.sh`, or the NSP script, which now finds the profile.
+
+### Optional paired graphics source patches
+
+`shader_patch` names a `.py` file in the profile with `fragment(source) -> source`; `nvn_draw_patch` names its matching `.h` replay implementation. Both are absent by default and must be configured together. Names cannot escape the profile directory. Patch Python bytes join the profile digest and per-shader cache key; the generated header references the replay file, and host/test dependencies include profile headers. This is an opt-in mechanism for the proposed [ACNH alpha-test implementation](01006F8002326000/README.md#island-map-alpha-test-proposed), pending wider validation.
