@@ -255,7 +255,7 @@ To enroll a cut for any game's own module:
 - **Cause:** an NRO's text segment includes its metadata header. The arbitrary build ID at `+0x40` can decode as instructions; `magic_0898_2015.nro` contains a literal load into `x18` at `+0x44`. The ordinary 4 KB data-gap heuristic cannot exclude this 120-byte header.
 - **Fix:** `nso_code.data_blocks` explicitly excludes `+8..+0x80` when the image has the `NRO0` header. The initial entry branch and MOD0 pointer remain intact, and scanning resumes at the first possible function. NSO scanning is unchanged.
 - **Found on:** [FINAL FANTASY X/X-2 HD Remaster](../../dm/games/0100BC300CB48000/README.md), 1,432 registered NROs.
-- **Check:** `test_nro_header.py` runs the real rewriter on a synthetic NRO whose build ID decodes as an `x18` load, checks the header byte-for-byte, and checks that an actual `x18` instruction immediately after it is rewritten.
+- **Check:** `test_nro_header.py` runs the real rewriter on synthetic NROs whose build IDs decode as an `x18` load or `br x18`, checks the header byte-for-byte, and checks that an actual `x18` instruction immediately after it is rewritten. Code before the first unwind entry is covered too: per-function analysis must not reenter the header even when the linear scans exclude it.
 
 ## Stack and system registers
 
@@ -289,6 +289,13 @@ To enroll a cut for any game's own module:
 - **Cause:** SDK 20 modules pack their relative relocations as `DT_RELR` (tag 36, size tag 35): `main` has 223,994 of them and its `DT_RELA` only symbol relocations. Each 8-byte entry is either an even offset (relocate it, move to the next slot) or an odd bitmap whose bits 1–63 stand for the following 63 slots; the addend is the slot's own value.
 - **Fix:** `relr_apply` in `loader.c`; `DM_LOADHASH` and `nvn_slots_got.py` read it too. The loader's log line counts them as `relr=`.
 - **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) 1.9.0 (SDK 20).
+
+### Regression rewrites register copied profiles twice
+
+- **Symptom:** `regress.py check` stops before gameplay with `CUTS of build ... in both ...`, naming a revision profile and its copied harness profile.
+- **Cause:** shader builds use a writable profile copy for generated tables. Passing that copy to the rewriter exposes its `patches.py` alongside the revision's original, registering every cut twice.
+- **Fix:** registered games rewrite with the revision's original profile; provisional games retain their external profile path. Shader builds continue using their writable copies. The harness regression covers both selections.
+- **Found on:** [NieR:Automata geometry review](../../dm/games/010056B015FE8000/README.md#geometry-optimization-review), when comparing rewrites after reconciling PRs #336 and #416.
 
 ## Checking a rewriter change
 

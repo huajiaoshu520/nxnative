@@ -165,6 +165,42 @@ check_t_queue_origin: t_queue_origin
 	DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_queue_origin
 run: check_t_queue_origin
 run: t_rast_discard
+t_initial_uncached: t_initial_uncached.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_initial_uncached.m $(MTL_T_SRC) $(FW)
+t_upload_slots: t_upload_slots.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_upload_slots.m $(MTL_T_SRC) $(FW)
+t_direct_upload: t_direct_upload.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_direct_upload.m $(MTL_T_SRC) $(FW)
+t_geometry_hazards: t_geometry_hazards.m t_geometry.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_geometry_hazards.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_geometry_hazards
+check_t_geometry_hazards: t_geometry_hazards
+	DM_NVN_CUT=1 MTL_DEBUG_LAYER=1 ./t_geometry_hazards
+	DM_NVN_CUT=0 MTL_DEBUG_LAYER=1 ./t_geometry_hazards
+	DM_NVN_CUT=1 DM_NVN_GEOMETRY_CUT=0 MTL_DEBUG_LAYER=1 ./t_geometry_hazards
+run: check_t_geometry_hazards
+t_geometry_feedback: t_geometry_feedback.m t_geometry.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_geometry_feedback.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_geometry_feedback
+check_t_geometry_feedback: t_geometry_feedback
+	MTL_DEBUG_LAYER=1 ./t_geometry_feedback
+run: check_t_geometry_feedback
+t_geometry_primitive_id: t_geometry_primitive_id.m t_geometry.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_geometry_primitive_id.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_direct_upload
+check_t_direct_upload: t_direct_upload
+	MTL_DEBUG_LAYER=1 ./t_direct_upload
+	DM_TEST_UP_LOST=13 MTL_DEBUG_LAYER=1 ./t_direct_upload
+run: check_t_direct_upload
+.PHONY: check_t_upload_slots
+check_t_upload_slots: t_upload_slots
+	MTL_DEBUG_LAYER=1 ./t_upload_slots
+	DM_NVN_UPLOAD_REUSE=0 MTL_DEBUG_LAYER=1 ./t_upload_slots
+run: check_t_upload_slots
+.PHONY: check_t_initial_uncached
+check_t_initial_uncached: t_initial_uncached
+	MTL_DEBUG_LAYER=1 ./t_initial_uncached
+run: check_t_initial_uncached
 .PHONY: check_t_feedback
 check_t_feedback: t_feedback
 	MTL_DEBUG_LAYER=1 ./t_feedback
@@ -251,6 +287,12 @@ t_clear_tex: t_clear_tex.m $(MTL_T_DEP)
 check_t_clear_tex: t_clear_tex
 	MTL_DEBUG_LAYER=1 ./t_clear_tex
 run: check_t_clear_tex
+t_unwritten_store: t_unwritten_store.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_unwritten_store.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_unwritten_store
+check_t_unwritten_store: t_unwritten_store
+	MTL_DEBUG_LAYER=1 ./t_unwritten_store
+run: check_t_unwritten_store
 t_upgrade_alias: t_upgrade_alias.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_upgrade_alias.m $(MTL_T_SRC) $(FW)
 t_image_alias: t_image_alias.m $(MTL_T_DEP)

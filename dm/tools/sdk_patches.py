@@ -133,7 +133,7 @@ CUTS = {
     (0x13be4c, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x13bee0, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
   ],
-  # Absolum 1.1.1 (v393216) sdk (SDK 18.3.2; the AddressRegionManager at the offsets of Galaxy's SDK 18.3.5 build): the same node area cut, and regions of 1 GB and more aligned to 32 MB
+  # Absolum's sdk (SDK 18.3.2, the same build in 1.1.1 v393216 and 1.1.2 v458752; the AddressRegionManager at the offsets of Galaxy's SDK 18.3.5 build): the same node area cut, and regions of 1 GB and more aligned to 32 MB
   # instead of 1 GB. VammManager::AllocateAddressRegion (sdk+0x13bfd0) aligns a region by its size: 64 KB under 2 MB, 2 MB under 4 MB, 4 MB under 32 MB, 32 MB under 1 GB, else 1 GB
   # (+0x13c03c), and places it first-fit after the regions already there. Absolum's two large regions (main's malloc, and the .NET GC's region range from the game_env) are both over 1 GB, with a 4 KB
   # region between them, so the alignment lost up to 1 GB before each one (measured with a 64 GB alias region: 0.6 GB before malloc's at that run's alias base, 1 GB before the GC's), which

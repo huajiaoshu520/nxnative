@@ -167,6 +167,14 @@ For a replaced DSP renderer the size query keeps the service's work-buffer contr
 - **Check:** [PR #262](https://github.com/seedds/nxnative/pull/262) reports Unicorn Overlord at 240 frames: 0 underruns in 10,000 callbacks; 13 Sentinels stays at 0. A silent Core Audio probe on a Mac mini reproduced the disposal error and the stale buffer after a rate change, then verified the fixes: default output switched between USB at 48 kHz and speakers at 44.1 kHz with callbacks continuing, and the same speakers at 44.1 / 96 / 48 kHz used 221 / 480 / 240 frames. The original default output and device rates were restored. `make -C dm/host/tests GAME=<id> audio-device` checks setup, device and rate notifications, scope filtering, buffer limits, synchronous notifications, the diagnostic override, absent devices, close and failed-open listener cleanup without audio hardware.
 - **Open:** the listed HDMI output was not retained as the system default during the probe, so switching to it remains unvalidated. The probe verifies silent host playback; gameplay listening after these listener changes has not been repeated.
 
+### The ring / silent switch muted the game on iOS
+
+- **Symptom:** a game is silent on an iPhone whose ring / silent switch is set to silent, though the volume is up; a game or video app plays through the switch.
+- **Cause:** the audio session's category was `AVAudioSessionCategorySoloAmbient`, which iOS silences with the switch.
+- **Fix:** `front_ios_audio_session` in `front_ios.m` sets `AVAudioSessionCategoryPlayback`: the switch no longer mutes the game, and it still interrupts other apps' audio, as `SoloAmbient` did. The host still suspends its output when the app goes to the background (no background audio mode is declared).
+- **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) (iPhone: reported by the player); also [issue #155](https://github.com/seedds/nxnative/issues/155), whose commenter has to toggle the switch to hear any game.
+- **Check:** open question, not run on a device: with the switch on silent, the game's sound should play; the log's `audio session:` line shows the session came up.
+
 ### Interruptions that stop RemoteIO callbacks
 
 - **Symptom:** sound stays silent after Siri, an alarm, a call or another app's audio; a game whose audio thread waits for its buffers back (Wwise's poll-only output, FMOD) then waits forever.

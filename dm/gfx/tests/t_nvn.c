@@ -10,6 +10,7 @@ module_t *module_of(const void *p) { (void)p; return NULL; }   // no guest modul
 module_t *g_mod; int g_nmod;                            // host symbols that crash.c depends on
 void svc_thread_dump(void) {}
 int dm_guest_as_contains(uintptr_t address) { (void)address; return 0; } // Tests use host-thread stacks.
+void dm_vi_layer_crop(int c[4]) { c[0] = c[1] = c[2] = c[3] = 0; }   // no vi layer crop in unit tests (hle_vi.c)
 void crash_install(void);
 void nvn_present_config(int hz, int display_mode);
 #include <fcntl.h>
@@ -56,6 +57,26 @@ static size_t tex_size(int fmt, int w, int h, int flags, size_t *align) {
 }
 
 int main(void) {
+    // Engine-native limiters have no FPS state page. Their launcher cap must
+    // still pace presents and select the display-link rate in display mode.
+    { win_t w={.interval=1};nvn_present_config(60,1);dm_fps_state=NULL;
+      setenv("DM_FPS_TARGET","30",1);g_present_cap=-1;
+      EXPECT("native 30 cap: display interval",2,present_itv(&w));
+      EXPECT("native 30 cap: period ns",33333333,present_period(&w));
+      EXPECT("native 30 cap: display-link target",30,nvn_game_fps());
+      EXPECT("native cap does not enable frame-step stubs",0,fstep_on());
+      setenv("DM_FPS_TARGET","60",1);g_present_cap=-1;
+      EXPECT("native 60 cap: period ns",16666666,present_period(&w));
+      EXPECT("native 60 cap: display-link target",60,nvn_game_fps());
+      setenv("DM_FPS_TARGET","0",1);g_present_cap=-1;w.interval=2;
+      EXPECT("no cap preserves display pacing",1,present_itv(&w));nvn_present_config(60,0);
+      EXPECT("no cap preserves game pacing",2,present_itv(&w));
+      _Alignas(8) uint8_t state[64]={0};float cap=60;memcpy(state,&cap,4);dm_fps_state=state;
+      EXPECT("stub state takes precedence over env",60,fps_present_cap());
+      *(uint32_t *)(state+4)=1;
+      EXPECT("stub movie flag retains 30 cap",30,fps_present_cap());
+      dm_fps_state=NULL;unsetenv("DM_FPS_TARGET");g_present_cap=-1;nvn_present_config(0,0);
+    }
     crash_install();   // the same SIGSEGV / SIGBUS handling as production (the page-fault hook is dispatched from within it)
     // 1. Bootstrap address lookup: bootstrap gets GetProcAddress, then uses it to get all the names
     PFNNVNBOOTSTRAPLOADERPROC boot = (PFNNVNBOOTSTRAPLOADERPROC)h_nvnBootstrapLoader;

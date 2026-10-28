@@ -99,9 +99,8 @@ class Gallery(unittest.TestCase):
             with patch.object(docs_gallery, 'TABLE', table):
                 text = docs_gallery.gallery()
                 self.assertIn('alt="A &amp; B: &quot;Adventure&quot; &lt;2&gt;"', text)
-                self.assertIn('<br>A &amp; B: &quot;Adventure&quot; &lt;2&gt;</td>', text)
-                self.assertNotIn('<sub>', text)
-            self.assertIn('<sub>~2 GB &amp; more</sub>', docs_gallery.cell(image, 'Game', '~2 GB & more', ''))
+                self.assertIn('<br><sub><b>A &amp; B: &quot;Adventure&quot; &lt;2&gt;</b></sub></td>', text)
+            self.assertIn('<sub><b>Game</b><br>~2 GB &amp; more</sub>', docs_gallery.cell(image, 'Game', '~2 GB & more', ''))
 
     def test_reversed_markers_fail_before_writing(self):
         with tempfile.TemporaryDirectory() as folder:

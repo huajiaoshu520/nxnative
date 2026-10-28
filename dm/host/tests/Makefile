@@ -78,7 +78,8 @@ $(B)/t_nro: t_nro.c ../loader.c ../hle_ro.c ../hle.h ../dm.h $(GAME_H) | $(B)
 .PHONY: nro
 nro: $(B)/t_nro
 	$(B)/t_nro
-$(GAME_H):
+# Regenerated on every make (FORCE), by the host Makefile: a header from an older game.py lacks newer defines; game.py writes it only when it changes, so an unchanged header rebuilds no test
+$(GAME_H): FORCE
 	$(MAKE) -C .. game_profile GAME=$(GAME)
 $(B)/t_heap_size: t_heap_size.c ../hle_svc.c ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -fsanitize=undefined -I.. $(GINC) -o $@ t_heap_size.c
@@ -166,12 +167,22 @@ $(B)/t_vorbis_divides: t_vorbis.c ../../third_party/stb_vorbis/stb_vorbis.c | $(
 run: $(B)/t_movie_vpx
 $(B)/t_movie_vpx: t_movie_vpx.c ../hle_movie.c $(GAME_H) ../gen/vpx/libvpx.a | $(B)
 	$(CLANG) -O1 -g -Wno-unused-function -Wno-tautological-compare $(GINC) -I../../third_party/libvpx -I../../third_party/libvpx/config -I../../third_party/stb_vorbis -Wl,-dead_strip -o $@ t_movie_vpx.c ../gen/vpx/libvpx.a -framework AudioToolbox
-../gen/vpx/libvpx.a: FORCE_VPX
+../gen/vpx/libvpx.a: FORCE
 	$(MAKE) -C .. GAME=$(GAME) gen/vpx/libvpx.a
-.PHONY: FORCE_VPX
+.PHONY: FORCE
+FORCE:
 $(B):
 	mkdir -p $@
 .PHONY: run tsan
+$(B)/t_resolution: t_resolution.c ../hle_fpslock.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	clang -O1 -Wall -Werror -Wno-unused-function -fsanitize=undefined -I.. $(GINC) -o $@ t_resolution.c
+.PHONY: resolution
+run: resolution
+resolution: $(B)/t_resolution
+	@for fps in 0 30 60; do for mode in 0 1 unset invalid; do $(B)/t_resolution $$mode $$fps native || exit 1; done; done
+	$(B)/t_resolution 1 60 old
+	$(B)/t_resolution 1 30 wrong
+	@for fps in 0 30 60; do for mode in 0 1 unset invalid; do $(B)/t_resolution $$mode $$fps asia || exit 1; done; done
 tsan: $(B)/t_audio_spsc_tsan $(B)/t_hid_tsan
 	$(B)/t_audio_spsc_tsan
 	$(B)/t_hid_tsan

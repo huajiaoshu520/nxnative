@@ -89,7 +89,7 @@ class ShaderCache(unittest.TestCase):
         mac, ios = Path(self.ns['out']), Path(self.ns['IOSOUT']); ios.mkdir()
         # Geometry's side outputs are restored; vertex and fragment side libraries are regenerated from the base MSL.
         expected = {}
-        for suffix in ('_b', '_bg0', '_bg1', '_bg2', '_bg3', '_bg4', '_bgv'):
+        for suffix in ('_b', '_bg0', '_bg1', '_bg2', '_bg3', '_bg4', '_bgv', '_bl0', '_bl1', '_bl3'):
             for d, extensions in ((mac, ('.metal', '.json')), (ios, ('.metallib', '.json'))):
                 for ext in extensions:
                     p = d / ('key' + suffix + ext)
@@ -128,6 +128,27 @@ class ShaderCache(unittest.TestCase):
 
 
 class TargetSelection(unittest.TestCase):
+    def test_mesh_compiles_only_requested_targets(self):
+        tree = ast.parse((TOOLS / 'dmsh_build.py').read_text())
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'mesh_finish')
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); ios = root / 'ios'; ios.mkdir()
+            (root / 'vertex_b.metal').write_text('vertex source')
+            (root / 'geometry_bl3.metal').write_text('geometry source')
+            (root / 'geometry_bl3.json').write_text(json.dumps({'geometry': {'capture_reads': [36]}}))
+            for targets in ({'mac'}, {'ios'}, {'mac', 'ios'}):
+                with self.subTest(targets=targets):
+                    compile_target = mock.Mock()
+                    compose = mock.Mock(return_value='mesh source')
+                    ns: dict[str, Any] = dict(os=os, json=json, subprocess=subprocess, out=td, w=td, TARGETS=targets,
+                              IOSOUT=str(ios) if 'ios' in targets else None, MESH_STATS=collections.Counter(),
+                              MTL=types.SimpleNamespace(compile=compile_target), dmsh_mesh=types.SimpleNamespace(compose=compose))
+                    exec(compile(ast.Module(body=[function], type_ignores=[]), '<mesh targets>', 'exec'), ns)
+                    ns['mesh_finish'](('vertex', 'geometry'))
+                    compose.assert_called_once_with('vertex source', 'geometry source', [36])
+                    self.assertEqual([call.args[0] for call in compile_target.call_args_list], [t for t in ('mac', 'ios') if t in targets])
+                    self.assertEqual(ns['MESH_STATS']['built'], 1)
+
     def selection(self, env):
         tree = ast.parse((TOOLS / 'dmsh_build.py').read_text())
         start = next(i for i, n in enumerate(tree.body) if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'IOSOUT' for t in n.targets))
