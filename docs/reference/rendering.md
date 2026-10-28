@@ -57,6 +57,13 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Found on:** [Super Mario 3D World + Bowser's Fury](../../dm/games/010028600EBDA000/README.md).
 - **Note:** how it was found: a blit-based pass snapshot of that target showed a correct, colourful image while a lighting shader edited to output only that input showed a uniform colour, and both resolved to the same Metal texture. Earlier suspects that turned out correct: fog, bindings, the 1D lookup tables, clear colours, the depth convention, the final sRGB view, blend states, GPU luminance readback. There is no tone-mapping pass in this game: the final composite writes `scene + bloom` into an RGB10A2 target.
 
+### Compatible views made from the texture under a view
+
+- **Symptom:** with `MTL_SHADER_VALIDATION=1`, `Invalid Metal usage: Texture is not resident` for a texture allocated in `tex_fit`; without validation those reads are undefined.
+- **Cause:** Metal takes a view's residency from the texture it was made from. `tex_fit` made its view of the texture the binding resolved to, which is often a view itself (the view cache's, a level and layer range or a swizzle), so the new view hung under a texture that is not in the residency set although the texture under both is.
+- **Fix:** `tex_fit` makes the view from the texture at the bottom of the chain, with the bound view's level and layer offsets, level count and swizzle (`t_tex_fit_root`).
+- **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md): a 64x64 environment cube read from a 2D-array view, 7 draws in the outdoors frame replayed with `nvn_replay` under shader validation.
+
 ### 1D textures as one-row 2D textures
 
 - **Symptom:** a type mismatch when a Metal 1D texture is bound to a shader's `texture2d` argument.
@@ -775,6 +782,13 @@ The Vulkan layer (`dm/gfx/vk/hle_vk.m`) was written for Hades; Super Mario Galax
 - **Fix:** for a known output map without colour 1, `pso_desc` chooses zero for the unwritten secondary source, consistently with the translator's dual-source output initialization (`Translator.EmitOutputsInitialization`). Source-1 colour / alpha factors become ZERO, and their complements become ONE. The shader, blend equation, blending enable and write mask remain intact. A written secondary source, an unknown output map or a separately specialized fragment is left alone. `t_missing_src1` compares both Metal pipeline paths against a shader explicitly writing a zero secondary source.
 - **Open:** the original GPU's value for an unwritten secondary source has not been measured; zero is the host's defined choice for that missing value.
 - **Found on:** [Mario + Rabbids Kingdom Battle](../../dm/games/010067300059A000/README.md).
+
+### A written secondary blend source (NVN dual-source blending)
+
+- **Symptom:** the host aborts on Metal's compiler queue (`findOrCreateComputeFastClearPipeline`, `[AGX] Failed assertion "error == MTLCompilerErrorNoError"`) seconds into the game, with or without the pipeline prebuild, while `MTLCompilerService` crash reports show `EXC_BAD_ACCESS` in `llvm::ExtractElementInst` under `AGCLLVMStatelessFragmentObject::buildBlendFactor` (`AGCLLVMStatelessPSODynamicLibrary::compile`).
+- **Cause:** target 0 blends with a `SRC1` factor and the pixel shader writes outputs 0 and 1. NVN, as Maxwell, takes output 1 as target 0's second source; the translator declares it `[[color(1)]]`, and Metal reads a second source only from `[[color(0), index(1)]]`. With no such output, Metal 4's blend compiler crashes building the pipeline's colour state ([An unwritten secondary blend source](#an-unwritten-secondary-blend-source) left a written output 1 alone).
+- **Fix:** `dmsh_build.py` `fs_dual` gives a pixel shader listed in the profile's `dual_want.tsv` that writes exactly colours 0 and 1 a second entry point, `main0_d`, the same body with output 1 as `[[color(0), index(1)]]` (`entry_d` in its reflection). `pso_desc` takes it for a pipeline whose output-0 target blends with a `SRC1` factor (`pso_reads_src1`); output 1's attachment, if the pass has one, is then left unwritten, as on Maxwell. A shader without the entry point blends with zero for the second source, as an unwritten one, with a red line naming it, and `DM_NVN_DUAL_WANT=<file>` appends every such key to a file for the profile's list. Only listed shaders get the entry point: 5,474 of Arceus's 6,156 pixel shaders write exactly colours 0 and 1, nearly all for a second render target. `t_missing_src1` checks both Metal pipeline paths with the entry point.
+- **Found on:** [Pokémon Legends: Arceus](../../dm/games/01001F5010DFA000/README.md): `f4f36a03b0c6691d` (`system_resource/gfx2/shader/env/system/ha_post_effects.bnsh`, variation 4: RGBA16Float, destination factor `SRC1_ALPHA`) and `ff45da02e225f961`, in the first minute.
 
 ### Dual-source blending from output location 1
 

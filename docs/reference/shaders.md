@@ -56,6 +56,13 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Reader:** `shader_split.py` scans each archive entry as a file of its own (`bea_members`).
 - **Found on:** [Big Brain Academy: Brain vs. Brain](../../dm/games/0100620012D6E000/README.md) (NintendoWare Bezel Engine 1.56): 2,125 shaders in about 90 s.
 
+### Bezel Engine 2.9 archives keep their entries inline
+
+- **Symptom:** the split finds almost no shaders and reports `[RED] /Archive/<name>.bea: entry 0 @0x4854535341 is not an ASST entry (its shaders are left out)` for every archive (`… file(s) could not be read`); the "offset" is the bytes `ASSTH`.
+- **Cause:** the 1.56 form (version 0x10100 at +8) has at +0x28 the offset of an array of entry offsets; the 2.9 form (version 0x60000) has the entries themselves there, back to back, each 0x48 bytes (its size the u32 at `ASST` +4), with an 8-byte type tag (`_G3DSHA`, `_TEXDATA`, …) at +0x1c and a 16-byte hash before the data and name offsets, which are the last two u64 of an entry in both forms.
+- **Fix:** `bea_members` reads the entries in place when the array starts with `ASST`.
+- **Found on:** [Super Mario Party Jamboree](../../dm/games/0100965017338000/README.md) (Bezel Engine 2.9, 949 archives, 127,203 entries): 25,693 shaders, against 246 (those in `main`) before, most of them in the 13,839 `.fshb` (`_G3DSHA`) entries; the split takes about 10 minutes.
+
 ### BNSH entries of GFPAK archives
 
 - **Symptom:** a provisional split finds only a fraction of the shaders (3,126 of Pokémon Sword's 41,516).
@@ -181,11 +188,12 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 ### Monolith ARH1, XBC1 and HCPS/SLCT shader containers
 
-- **Symptom:** archive shaders are absent from the map; the two boot shaders in `main` are reported as raw controls with no identified code area.
+- **Symptom:** archive or loose asset shaders are absent from the map; only boot shaders in `main` are found, sometimes reported as raw controls with no identified code area.
 - **Cause:** Monolith uses ARH1/ARD archives and XBC1 streams. HCPS shader containers live inside models, map streams and standalone shader files; a standalone SLCT in `main` omits the HCPS header.
 - **Fix:** `shader_split.py` reconstructs paths from the ARH1 XOR trie, reads bounded archive entries in parallel, and decodes stored/zlib/zstd XBC1 streams recursively. The ARH stored size excludes an XBC1 wrapper's 48 bytes. Decoded members are searched for both HCPS and complete GLSLC outputs (effect asset packs); compressed literals are visited only after decoding. HCPS's SLCT/NVSD descriptors locate each variant's control and code ranges; a vertex bundle can include geometry, so stages are split by each control's own lengths. Text-bearing controls advance at eight-byte alignment. Standalone SLCT sections use offsets relative to their own start. Source-only HCPS containers with empty code/control ranges hold no NVN binaries. Pairs stay within their program variant. Synthetic fixtures cover wrapper bounds, embedded geometry, variants, standalone offsets and compressed streams containing literal container magics.
 - **Nested effect compression:** Firehawk WIPAC resources can wrap their `BlShaderArchive` GLSLC programs in `cmp\0zlib`: an eight-byte signature, little-endian stored/raw u32 lengths, then zlib. This layer lives inside the decoded XBC1 entry. The recursive reader checks both lengths and the end of the stream; it excludes these compressed ranges from raw container scans too. The four initially missing geometry/pixel keys and two additional vertex/pixel keys from Xenoblade Chronicles 3's opening match `/effect/fld/ma01a.wipac` after this decoding. Synthetic tests cover nested literal streams and incorrect sizes.
-- **Found on:** [Xenoblade Chronicles 3](../../dm/games/010074F013262000/README.md#files-and-shaders), whose note records the census and runtime key checks; [Xenoblade Chronicles 2](../../dm/games/0100E95004038000/README.md#files-and-shaders), with the same archive and standalone SLCT layouts on SDK 3.5.0.
+- **Loose containers:** HCPS programs, XBC1 streams, DRSM model streams and compressed effect resources also occur outside ARH/ARD archives. Both the file scanner and nested-container scanner dispatch their headers to the same recursive decoder, before the generic shader-magic filter. Otherwise even a complete loose HCPS program is discarded. Synthetic file scans cover direct programs, compressed programs and several embedded streams, independent of filename suffix.
+- **Found on:** [Xenoblade Chronicles 3](../../dm/games/010074F013262000/README.md#files-and-shaders), whose note records the census and runtime key checks; [Xenoblade Chronicles 2](../../dm/games/0100E95004038000/README.md#files-and-shaders), with the same archive and standalone SLCT layouts on SDK 3.5.0; [Xenoblade Chronicles: Definitive Edition](../../dm/games/0100FF500E34A000/README.md#files-and-shaders), with loose containers.
 - **Format references:** [ARH1 layout](https://github.com/roccodev/ard-tools/blob/master/docs/arh1.md), [xc3_lib shader structures](https://github.com/ScanMountGoat/xc3_lib/blob/main/xc3_lib/src/spch.rs). The reader's lengths and keys were checked against the supplied game files.
 
 ### Needle shader containers in main and GFD archives
@@ -657,6 +665,8 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Note:** the vertex shaders that feed a hull or geometry shader can be found from the shader headers (SPH): the generic attribute map at +0x18 of the consumer's header (inputs) equals the one at +0x36 of the vertex shader's (outputs). In Luigi's Mansion 3, 40 vertex shaders match a hull shader and 49 a geometry shader.
 
 ## Bindings and handles
+
+- **Note:** the layout of NVN's driver segments `c0` and `c2` (the handle tables, the storage and uniform buffer tables, the words the host fills) and the binding kinds of the reflection JSON have one definition, `dm/gfx/nvn/dmsh_abi.h`. The host includes it (`nvn_mtl.m`, `nvn_refl.m`, `nvn_obj.h`); `dmsh_build.py` reads it through `dm/gfx/tools/dmsh_abi.py`, which stops on any line it cannot read. Both files are part of the chain version. `dm/tools/tests/test_dmsh_abi.py` checks that the tables fit together, that the host converts every kind the build may write, that the translator's own copy of the `c2` layout (`Program.cs`) agrees, and that the values do not come back as literals in the host or the build. The entries below cite the offsets.
 
 ### Driver-segment reads outside fragment shaders
 

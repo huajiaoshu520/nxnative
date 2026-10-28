@@ -10,10 +10,11 @@ Each game the port knows has a folder `dm/games/<id>/`, named after the base gam
 - **`vk_capture.tsv`** (a Vulkan game that generates its shaders at run time, Super Mario Galaxy): the keys of the SPIR-V modules it generates.
 - **`gl_capture.tsv`** (an OpenGL game that puts its GLSL together at run time, Balatro): the files (`<key>.vert` / `<key>.frag`) of the shaders it compiles.
 - **`bf_want.tsv`**.
+- **`dual_want.tsv`** (optional): pixel shaders a pipeline blends with their output 1 as the second source (dual-source blending); `dmsh_build.py` gives each a dual-source entry point (`fs_dual`). The host lists them with `DM_NVN_DUAL_WANT=<file>` ([A written secondary blend source](../../docs/reference/rendering.md#a-written-secondary-blend-source-nvn-dual-source-blending)).
 - **`validated.tsv`** (optional): the chain this game was last green on, written by `scripts/regress.py check --record` (or `baseline --record`) when its comparison status is `PASS` or `CHANGED` and every tested boot run succeeds. A boot failure shared with the baseline still prevents recording. `quick` / `full` rows (the latest of each), `mode<TAB>chain=<DMSH_CHAIN> commit=<short SHA>[+dirty] date=<UTC day> machine=<model> macos=<version>`; a red result leaves the rows as they were. A build using a derived profile does not validate the repository profile. `regress.py list` shows it and whether that chain is the current one. It holds no game data; commit it with the pull request.
 - **`geo_mesh.tsv`** (optional): vertex / geometry shader pairs drawn with a passthrough geometry shader; `dmsh_build.py` builds a mesh library for each (`dmsh_mesh.py`), and the host draws such a pair's triangle lists as mesh draws ([Passthrough geometry shaders drawn by the vertex shader](../../docs/reference/shaders.md#passthrough-geometry-shaders-drawn-by-the-vertex-shader)). A pair not listed takes the compute path.
 - **`README.md`**: the game's notes: what its profile needs and why, what was found on it, how to reach a scene on the Mac, what is still open. Listed in [Games](#games).
-- **`patches.py`** (optional): the rewriter's patches of the game's own builds (`main`), keyed by NSO build ID: `CUTS` (byte cuts, each original asserted), `OBS` (observation gates) and `FRAME_STEP` (frame-step stubs). `dm/tools/patch_nso.py` loads every profile's file and applies those of a module's build, wherever it comes from; a build claimed twice stops the rewrite. A provisional profile (in `DM_GAMES_DIR`) may have one too, which the rewriter and the NSP script's rewrite step take as well. Cuts of Nintendo's `sdk` modules, which several games ship, are in `dm/tools/sdk_patches.py`. Opt-in `MATCH_CUTS` can locate verified cuts in unregistered builds of the selected game by function fingerprints (a patch of several functions applies whole or not at all); see [Function-matched cuts](../../docs/reference/rewriter.md#function-matched-cuts-for-unregistered-builds) for enrollment, profile precedence and limits. A game without patches has no file, and a derived profile uses its repository profile's rules. `dm/tools/tests/test_patches.py` checks that a file names only its own profile's builds.
+- **`patches.py`** (optional): the rewriter's patches of the game's own builds (`main`), keyed by NSO build ID: `CUTS` (byte cuts, each original asserted), `OBS` (observation gates) and `FRAME_STEP` (frame-step stubs). `dm/tools/patch_nso.py` loads every profile's file and applies those of a module's build, wherever it comes from; a build claimed twice stops the rewrite. A provisional profile (in `DM_GAMES_DIR`) may have one too, which the rewriter and the NSP script's rewrite step take as well. Cuts of Nintendo's `sdk` modules, which several games ship, are in `dm/tools/sdk_patches.py`. Opt-in `MATCH_CUTS` can locate verified cuts in unregistered builds of the selected game by function fingerprints (a patch of several functions applies whole or not at all); see [Function-matched cuts](../../docs/reference/rewriter.md#function-matched-cuts-for-unregistered-builds) for enrollment, profile precedence and limits. A game without patches has no file, and a derived profile uses its repository profile's rules. `dm/tools/tests/test_patches.py` checks that a file names only its own profile's builds. `GENERALIZE` (a note, not read by the rewriter) says whether a general rule could replace the file's patches; after changing a patch file, a build-keyed host table or a profile key, run `dm/tools/docs_patches.py` to update the [patch index](../../docs/agents/game-patches.md).
 
 The chain version is not in the profile: one version serves every game (`dm/gfx/nvn/dmsh_chain.h`, written by `dmsh_chain.py --header`). Two more tables live in the profile folder but are not committed (git ignores them). A full `dmsh_build.py` run makes both from its Mac outputs, so each checkout makes its own, and stamps its libraries with the digest of the profile's inputs (`b-<V>/inputs.tsv`, `dmsh_chain.py --inputs`). The host takes a table only when its header names its library's chain version and that digest.
 - **`c1_full.tsv`**: written by `c1_guard.py`. Without it every shader's c1 gets its own 64 KiB.
@@ -65,6 +66,7 @@ One row per profile; the notes are each profile's `README.md`.
 | [Captain Toad: Treasure Tracker](01009BF0072D4000/README.md) | `01009BF0072D4000` | 1.4.2 | 8.2.0 | Nintendo EPD Tokyo (`al` over sead / agl) | NVN |
 | [Catherine: Full Body](0100BF00112C0000/README.md) | `0100BF00112C0000` | 1.0.1a | 8.2.1 | Atlus GFD (CRI middleware) | NVN |
 | [Celeste](01002B30028F6000/README.md) | `01002B30028F6000` | 1.4.1.1 | 15.3.2 | MonoGame (C# → C++ by BRUTE) | NVN |
+| [Cult of the Lamb](01002E7016C46000/README.md) | `01002E7016C46000` | 1.5.28 | 19.3.14 | Unity 2022.3.62f3 IL2CPP, FMOD | NVN |
 | [Cuphead](0100A5C00D162000/README.md) | `0100A5C00D162000` | 1.3.7 | 5.5.0 | Unity 2017.4.9f1 IL2CPP | NVN |
 | [DARK SOULS: REMASTERED](01004AB00A260000/README.md) | `01004AB00A260000` | 1.0.3 | 4.5.0 | FromSoftware's engine | NVN |
 | [Digimon Story Cyber Sleuth: Complete Edition](010014E00DB56000/README.md) | `010014E00DB56000` | 1.0.3 | 6.4.0 | Media.Vision MVGL | OpenGL |
@@ -74,6 +76,7 @@ One row per profile; the notes are each profile's `README.md`.
 | [DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition](01006C300E9F0000/README.md) | `01006C300E9F0000` | 1.0.4 | 7.3.2 | Unreal Engine 4.18 | NVN |
 | [FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition](0100CE4010AAC000/README.md) | `0100CE4010AAC000` | 1.0.3 | 8.2.1 | Unity 2018.4.2f1 IL2CPP, FMOD | NVN |
 | [FINAL FANTASY RESONANCE](0100606026F12000/README.md) | `0100606026F12000` | 1.0.1 | 20.5.17 | Unreal Engine 5.6.1 | NVN |
+| [FINAL FANTASY RESONANCE, Asian release](0100B8A026F14000/README.md) | `0100B8A026F14000` | 1.0.1 | 20.5.17 | Unreal Engine 5.6.1 | NVN |
 | [FINAL FANTASY TACTICS - The Ivalice Chronicles](010038B015560000/README.md) | `010038B015560000` | 1.4.0 | 19.3.9 | Square Enix's engine | NVN |
 | [FINAL FANTASY X/X-2 HD Remaster](0100BC300CB48000/README.md) | `0100BC300CB48000` | 1.0.0 (base) | 5.4.0 | PhyreEngine (Virtuos) | NVN |
 | [Fire Emblem Engage](0100A6301214E000/README.md) | `0100A6301214E000` | 2.0.0 | 12.3.7 | Unity 2020.3.18f1 IL2CPP, Wwise | NVN |
@@ -99,9 +102,11 @@ One row per profile; the notes are each profile's `README.md`.
 | [OCTOPATH TRAVELER II](0100A3501946E000/README.md) | `0100A3501946E000` | 1.1.1 | 12.3.2 | Unreal Engine 4.27 | NVN |
 | [Paper Mario: The Thousand-Year Door](0100ECD018EBE000/README.md) | `0100ECD018EBE000` | 1.0.1 | 15.3.2 | Intelligent Systems' engine on NintendoWare | NVN |
 | [Patrick's Parabox](0100E44016C22000/README.md) | `0100E44016C22000` | 1.0.1 | 13.3.7 | Unity 2020.3.30f1 IL2CPP | NVN |
+| [Persona 4 Golden](010062B01525C000/README.md) | `010062B01525C000` | 1.0.2 | 14.3.0 | Atlus in-house (CRI middleware) | NVN |
 | [Persona 5 Royal](01005CA01580E000/README.md) | `01005CA01580E000` | 1.0.2 | 13.3.2 | Atlus GFD / Needle (CRI middleware) | NVN |
 | [Pikmin 4](0100B7C00933A000/README.md) | `0100B7C00933A000` | 1.1.1 | 10.4.8 | Unreal Engine 4.26.2 | NVN |
 | [Pokémon Brilliant Diamond](0100000011D90000/README.md) | `0100000011D90000` | 1.3.0 | 11.4.3 | Unity 2019.4.27f1 IL2CPP | NVN |
+| [Pokémon Legends: Arceus](01001F5010DFA000/README.md) | `01001F5010DFA000` | 1.1.1 | 11.4.0 | Game Freak's engine (between Sword's and Trinity) | NVN |
 | [Pokémon Legends: Z-A](0100F43008C44000/README.md) | `0100F43008C44000` | 2.0.2 | 19.3.11 | Game Freak's Trinity engine | NVN |
 | [Pokémon Scarlet](0100A3D008C5C000/README.md) | `0100A3D008C5C000` | 1.0.0 | 13.3.5 | Game Freak's Trinity engine | NVN |
 | [Pokémon Shield](01008DB008C2C000/README.md) | `01008DB008C2C000` | 1.3.2 | 7.3.2 | Game Freak's engine (before Trinity) | NVN |
@@ -121,6 +126,7 @@ One row per profile; the notes are each profile's `README.md`.
 | [Super Mario Galaxy](010099C022B96000/README.md) | `010099C022B96000` | 1.3.1 | 18.3.5 | NERD's Hagi Wii layer (recompiled PowerPC) | Vulkan |
 | [Super Mario Galaxy 2](0100FD8022DAA000/README.md) | `0100FD8022DAA000` | 1.4.0 | 18.3.5 | NERD's Hagi Wii layer (recompiled PowerPC) | Vulkan |
 | [Super Mario Odyssey](0100000000010000/README.md) | `0100000000010000` | 1.4.1 | 7.3.2 | Nintendo EPD (sead / agl, NintendoWare) | NVN |
+| [Super Mario Party Jamboree](0100965017338000/README.md) | `0100965017338000` | 2.3.0 | 17.5.9 | NintendoWare Bezel Engine 2.9 | NVN |
 | [Super Smash Bros. Ultimate](01006A800016E000/README.md) | `01006A800016E000` | 13.0.5 | 8.2.1 | Bandai Namco / Sora's engine | NVN |
 | [Taiko Risshiden V DX](0100346017304000/README.md) | `0100346017304000` | 1.1.1 | 12.3.3 | Koei Tecmo's KTGL | NVN |
 | [The Great Ace Attorney Chronicles](010036E00FB20000/README.md) | `010036E00FB20000` | 1.0.0 (base) | 10.4.1 | Capcom's MT Framework | NVN |
@@ -130,6 +136,7 @@ One row per profile; the notes are each profile's `README.md`.
 | [The Legend of Zelda: Tears of the Kingdom](0100F2C0115B6000/README.md) | `0100F2C0115B6000` | 1.4.3 | 20.5.22 | Nintendo EPD (sead / agl / gsys) | NVN |
 | [Unicorn Overlord](010069401ADB8000/README.md) | `010069401ADB8000` | 1.05 | 16.2.4 | Vanillaware's engine | NVN |
 | [Unicorn Overlord, Asian release](010054B01AD92000/README.md) | `010054B01AD92000` | 1.05 | 16.2.4 | Vanillaware's engine | NVN |
+| [Xenoblade Chronicles: Definitive Edition](0100FF500E34A000/README.md) | `0100FF500E34A000` | 1.1.2 | 9.3.1 | Monolith's engine | NVN |
 | [Xenoblade Chronicles 2](0100E95004038000/README.md) | `0100E95004038000` | 2.1.0 | 3.5.0 | Monolith's engine | NVN |
 | [Xenoblade Chronicles 3](010074F013262000/README.md) | `010074F013262000` | 2.2.1 | 12.3.9 | Monolith's engine | NVN |
 | [Yoshi's Crafted World](01006000040C2000/README.md) | `01006000040C2000` | 1.0.1 | 4.4.1 | Unreal Engine 4.18 era (Good-Feel) | NVN |

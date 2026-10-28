@@ -38,15 +38,10 @@ def glsl_sources(img):
 
 
 def nso(path):
-    """An NSO module: its three segments decompressed (the image without bss), build ID, segment sizes and bss size"""
-    import lz4.block
-    d = Path(path).read_bytes(); flags = struct.unpack_from('<I', d, 0xc)[0]
-    segs = [struct.unpack_from('<III', d, 0x10 + i * 0x10) for i in range(3)]; csz = struct.unpack_from('<III', d, 0x60)
-    img = bytearray(segs[2][1] + segs[2][2])
-    for i, (fo, mo, sz) in enumerate(segs):
-        raw = d[fo:fo + csz[i]]
-        img[mo:mo + sz] = lz4.block.decompress(raw, uncompressed_size=sz) if flags >> i & 1 else raw
-    return bytes(img), d[0x40:0x50].hex(), [sz for _, _, sz in segs], struct.unpack_from('<I', d, 0x3c)[0]
+    """An NSO module: its three segments decompressed (the image without bss, dm/tools/nso.py), build ID, segment sizes and bss size; nso.Error (a ValueError) on a damaged file"""
+    import nso
+    m = nso.load(Path(path).read_bytes(), str(path))
+    return bytes(m.image), m.build_id[:0x10].hex(), [sz for _, sz in m.segments], m.bss
 
 
 def kind(m):   # a short name for what a module is: its NintendoSDK component, GLSLC, or the nn:: namespace most of its exports are in
@@ -74,6 +69,12 @@ def npdm(path):   # (system resource size, program ID) from main.npdm; a non-zer
     if not Path(path).exists(): return 0, None
     d = Path(path).read_bytes(); a = d.find(b'ACI0')
     return (struct.unpack_from('<I', d, 0x14)[0] if d[:4] == b'META' else 0), (struct.unpack_from('<Q', d, a + 0x10)[0] if a >= 0 else None)
+
+
+def aarch64(path):   # main.npdm's flags (META +0xc) bit 0, Is64BitInstruction; clear = a 32-bit ARM program (Pikmin 3 Deluxe), which Apple silicon cannot run; True without the file
+    if not Path(path).exists(): return True
+    d = Path(path).read_bytes()
+    return d[:4] != b'META' or bool(d[0xc] & 1)
 
 
 def facts_of(exefs, romfs):
@@ -489,7 +490,9 @@ if __name__ == '__main__':
     if a[:1] == ['--check']:
         sys.exit(1 if check(a[1] if len(a) > 1 else '/Volumes/T7/nsp') else 0)
     if len(a) != 2: sys.exit(__doc__ or 'usage: profile_guess.py <ExeFS dir> <romfs_manifest.tsv | RomFS dir> | profile_guess.py --check [<NSP root>]')
-    F = facts_of(*a)
+    import nso as loader   # dm/tools/nso.py (nso here is this file's own reader)
+    try: F = facts_of(*a)
+    except loader.Error as e: sys.exit(f'[RED] {e}')
     for n, m in F['mods'].items():
         print(f'{n}: {m["kind"]}, build {m["bid"]}, bss {m["bss"] / MiB:.1f} MB{" (far)" if m["far"] else ""}, {len(m["imports"])} imports, {len(m["exports"])} exports')
     print(f'SDK {F["sdk"]}, system resource {F["sysres"] // MiB} MB, GLSLC outputs in main {F["glslc"]}, GLSL sources {F["glsl_src"]}, SPIR-V files {F["romfs"]["mags"]["SPIR-V"]}')
