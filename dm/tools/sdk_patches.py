@@ -80,6 +80,15 @@ CUTS = {
     (0x1423fc, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x142468, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
   ],
+  # Paper Mario: The Origami King 1.0.1 (v65536) sdk (SDK 8.3.1): the SDK-wide rules' cuts (node area and alignment implementation 1, the constructor at sdk+0xc96e0), registered because the
+  # profile was brought up on this build. nninitStartup initializes a StandardAllocator over 62 GB with virtual address memory (the region returns to main+0x5c05ac); the host's cap gives it
+  # 4.06 GB, which fits the 4.375 GB alias region only after the 62 MB node area and with 32 MB alignment. Blasphemous 1.0.8 ships this build too; it has no virtual address memory
+  # (no system resource) and never reaches them
+  '86a2afd863c99062d666226a9e7aa764': [
+    (0xc96f0, 'e9230b32', '097ca052', 'AddressRegionManager constructor: node area limit orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0xc9790, 'e9230b32', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0xc98fc, 'ea030232', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more orr w10,wzr,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
+  ],
   # Patrick's Parabox 1.0.1 (v65536) sdk (SDK 13.3.7, Unity 2020.3.30f1): the same node area cut. nninitStartup (main+0x1cd010) calls StandardAllocator::Initialize(nullptr, pool − used) with virtual
   # address memory, which aborted at its CentralHeap::Init (sdk+0x324dec). The constructor is at sdk+0x37c3a0 (limit = alias start + 0x3fe00000 at +0x28, a unit heap of 0x30-byte nodes, the area then
   # registered as occupied at +0x37c44c)
@@ -255,7 +264,7 @@ def align(size, fingerprints, at, old):
     return {'name': alignment, 'size': size, 'fingerprints': fingerprints, 'cuts': [
         (at, old, '0a40a052', f'AllocateAddressRegion: alignment of regions of 1 GB and more {mov(old, 0x40000000)} → mov w10,#0x2000000 (32 MB, as from 32 MB up)')]}
 MATCH_CUTS = {'sdk': [
-    # SDK 7.3.2 (DRAGON QUEST XI S), 8.2.1 (Super Smash Bros. Ultimate)
+    # SDK 7.3.2 (DRAGON QUEST XI S), 8.2.1 (Super Smash Bros. Ultimate), 8.3.1 (Paper Mario: The Origami King)
     node(276, ['5c81bb821d119d00ffcda6c3a4f1b827fc08c084fa53995e3a6262b5bf37cded'], 0x10, 'e9230b32', '097ca052', 0xb0, 'e9230b32', '097ca052'),
     # SDK 10.4.1 (Advance Wars 1+2), 10.4.8 (Pikmin 4)
     node(272, ['6fe2b1b95eced45e081611b786a8ff80b656bdcad6bd58082ee3264f5163ec44'], 0x10, 'e8230b32', '087ca052', 0xac, 'e9230b32', '097ca052'),
@@ -268,7 +277,7 @@ MATCH_CUTS = {'sdk': [
                '3549234b3e27a013791bbd834b5ff7dd501a5826c4216c80961bd996eef556ea'], 0x10, '08fca752', '087ca052', 0xa4, '09fca752', '097ca052'),
     # SDK 19.3.11 (Pokémon Legends: Z-A), 19.3.13 (Octopath Traveler 0), 20.5.19 (BALL x PIT), 20.5.22 (Tears of the Kingdom)
     node(244, ['b02f0514e2cc25a65261ec23cefa9a1fe7b244b3db741f183deb334935541eee'], 0x10, '08fca752', '087ca052', 0x7c, '09fca752', '097ca052'),
-    # SDK 7.3.2 (DRAGON QUEST XI S), 8.2.1 (Super Smash Bros. Ultimate), 10.4.1 (Advance Wars 1+2), 10.4.8 (Pikmin 4)
+    # SDK 7.3.2 (DRAGON QUEST XI S), 8.2.1 (Super Smash Bros. Ultimate), 8.3.1 (Paper Mario: The Origami King), 10.4.1 (Advance Wars 1+2), 10.4.8 (Pikmin 4)
     align(352, ['006abd214d94c93386735550cee4fe7708bc1f0d1812663123cfa3b9611f1533', '42167e4d3c710e11937e45a9e420fdd0ed9a410386c17da4d1d896b847d3b0d6'], 0x6c, 'ea030232'),
     # SDK 11.4.0 (Pokémon Legends: Arceus, Kirby and the Forgotten Land): the next rule's size classes with 8 more bytes of body; the 4 GB StandardAllocator region of Arceus's nninitStartup
     # (the host's cap) fits after the 62 MB node area only with it
