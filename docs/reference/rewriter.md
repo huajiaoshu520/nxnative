@@ -45,8 +45,8 @@ To enroll a cut for any game's own module:
 
 - **Symptom:** `jump table <addr>` assertion where the index is a copy made before the check (`mov w0,w18`, then 41 instructions holding two other jump tables on `x0`, then `cmp w18,#4; b.hi; ldrsw x18,[x11,x0,lsl #2]; add x18,x18,x11; br x18`).
 - **Cause:** every other form follows copies made after the bounds check.
-- **Fix:** `check_before_copy` accepts the `cmp` and `b.hi` right before the load when a `mov wI, wS` up to 64 instructions back is the last writer of both registers; capstone lists a `cmp`'s first operand as written, which the search skips. It runs only when every other form has failed, so modules that rewrote before come out the same.
-- **Found on:** [DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition](../../dm/games/01006C300E9F0000/README.md) `main+0x2dd8cd0`.
+- **Fix:** `check_before_copy` accepts the `cmp` and `b.hi` right before the load when a `mov wI, wS` is the last writer of both registers; capstone lists a `cmp`'s first operand as written, which the search skips. The search follows the function boundary rather than an arbitrary instruction count, stopping at undecodable gaps and calls that can clobber either register. It runs only when every other form has failed.
+- **Found on:** [DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition](../../dm/games/01006C300E9F0000/README.md) `main+0x2dd8cd0`; [Mario + Rabbids Kingdom Battle](../../dm/games/010067300059A000/README.md) `subsdk0+0x7340b8`, whose copy is 71 instructions before the load, across two switches preserving both registers (beyond the former 64-instruction limit).
 - **Note:** before fixing one site, a census of all of them saves a run per site: a copy of `patch_nso.py` whose assert prints and continues found this one alone among the 25,508 `x18` sites. That `main` has no unwind entries for its first 70 MB, so the rewriter disassembles them as one function and takes 6 minutes (see [Long functions analysed in pieces](#long-functions-analysed-in-pieces)).
 
 ### 64-bit bounds check of the index
@@ -248,6 +248,14 @@ To enroll a cut for any game's own module:
 - **Fix:** `dm/tools/nso_code.py` finds such data blocks: a stretch of at least 4 KB between the `.eh_frame` FDE ranges in which more than a quarter of the words do not decode. The sweep skips them (`DATA_BLOCKS`, logged as `data blocks left alone`), and so does `insn_census.py`, whose counts then match the rewriter's again (11,744 `x18` sites in Absolum's `main`). Code without unwind information is still swept: it decodes (Absolum's zlib at `main+0x75261c`, libunwind's register restore at `main+0x28dbd4`).
 - **Found on:** [Absolum](../../dm/games/0100A83022A22000/README.md) `main` (.NET NativeAOT).
 - **Check:** no module of the 19 other games on hand has a data block, and their rewrites are byte-identical.
+
+### NRO metadata inside the text segment
+
+- **Symptom:** `RuntimeError: 44 ldr x18, #0xfffffffffff40370` while rewriting an NRO.
+- **Cause:** an NRO's text segment includes its metadata header. The arbitrary build ID at `+0x40` can decode as instructions; `magic_0898_2015.nro` contains a literal load into `x18` at `+0x44`. The ordinary 4 KB data-gap heuristic cannot exclude this 120-byte header.
+- **Fix:** `nso_code.data_blocks` explicitly excludes `+8..+0x80` when the image has the `NRO0` header. The initial entry branch and MOD0 pointer remain intact, and scanning resumes at the first possible function. NSO scanning is unchanged.
+- **Found on:** [FINAL FANTASY X/X-2 HD Remaster](../../dm/games/0100BC300CB48000/README.md), 1,432 registered NROs.
+- **Check:** `test_nro_header.py` runs the real rewriter on a synthetic NRO whose build ID decodes as an `x18` load, checks the header byte-for-byte, and checks that an actual `x18` instruction immediately after it is rewritten.
 
 ## Stack and system registers
 

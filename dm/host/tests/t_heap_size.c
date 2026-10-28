@@ -19,7 +19,7 @@ static _Noreturn void heap_abort(void);
 #undef abort
 #undef mprotect
 
-module_t g_mod[MAX_MOD];
+module_t *g_mod;
 int g_nmod;
 struct dm_flags g_flag;
 void hlecount_svc(int num) { (void)num; }

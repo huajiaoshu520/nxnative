@@ -87,13 +87,16 @@ def fde_ranges(img):
 
 def data_blocks(img, text_end, md):
     """Sorted [(start, end)] of the data blocks in text [0, text_end) (see the module docstring). md: a capstone AArch64 disassembler"""
-    gaps, last = [], 0
+    # An NRO's text includes its header: the build ID at +0x40 is arbitrary bytes, not instructions. FFX/X-2's magic_0898_2015.nro has a literal ldr x18 there.
+    # Keep the entry branch and MOD0 pointer (+0..+8), but never scan the reserved word or NRO0 header (+8..+0x80), even when this gap is shorter than DATA_MIN.
+    nro = img[0x10:0x14] == b'NRO0'
+    gaps, last = [], 0x80 if nro else 0
     for s, e in fde_ranges(img):
         if s >= text_end: break
         if s > last: gaps.append((last, s))
         last = max(last, e)
     if last < text_end: gaps.append((last, text_end))
-    out = []
+    out = [(8, 0x80)] if nro else []
     for s, e in gaps:
         s, e = (s + 3) & ~3, e & ~3
         if e - s < DATA_MIN: continue

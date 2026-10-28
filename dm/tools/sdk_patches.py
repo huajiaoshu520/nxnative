@@ -1,6 +1,16 @@
 # The rewriter's patches of Nintendo SDK module builds (sdk), which several games can ship: dm/tools/patch_nso.py applies those of a module's NSO build ID, whatever the game.
 # A patch of a game's own module (main) goes in its profile's patches.py (dm/games/<id>/patches.py). CUTS as described in patch_nso.py ("Registered patches")
 CUTS = {
+  # Kingdom Battle 1.9.589692, SDK 4.4.0: the older VammManager reserves a
+  # full 1 GB node area (constructor +0x93dd8, occupied range +0x93e98).
+  # Snowdrop's compact 3 GB region follows its small metadata reservation;
+  # 1 GB placement alignment still cannot fit it in the iPhone guest block.
+  # Platform-limit cuts: 64 MB node area and 32 MB large-region alignment.
+  '9de92bad67c4150268943ab4843ace65': [
+    (0x93dfc, 'e9030232', '0980a052', 'VammManager node area limit: 1 GB to 64 MB'),
+    (0x93e8c, 'ea030232', '0a80a052', 'VammManager occupied node area: 1 GB to 64 MB'),
+    (0x93fe0, 'ea030232', '0a40a052', 'AllocateAddressRegion: align regions of 1 GB and more to 32 MB'),
+  ],
   # Xenoblade Chronicles 3 2.2.1, SDK 12.3.9: the same AddressRegionManager
   # constructor and size-class alignment as Engage's SDK 12.3.7. Its cut 4 GB
   # malloc reservation must fit the 4.375 GB alias region on iOS.

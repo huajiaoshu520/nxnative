@@ -128,6 +128,33 @@ class ForwardBase(unittest.TestCase):
         self.assertIsNone(self.run_site(self.words(w8=ADRP(17, 32, 0x5000))))
 
 
+class IndexCopiedBeforeCheck(unittest.TestCase):
+    def run_site(self, middle):
+        table = 0x4040
+        words = [ADRP(9, 0, table), ADDI(9, 9, table & 0xfff), mov(18, 17, False)] + middle
+        at = len(words) * 4
+        words += [0x7100123f, bhi(at + 4, at + 20), 0xb8b27932, ADDR(18, 18, 9), BR(18), RET]
+        for i in range(5): struct.pack_into('<i', IMG, table + 4 * i, at + 20 - table)
+        md = Cs(CS_ARCH_ARM64, CS_MODE_ARM); md.detail = True
+        ins = [p for i, w in enumerate(words) for p in md.disasm(struct.pack('<I', w), 4 * i)]
+        j = next(i for i, p in enumerate(ins) if p.mnemonic == 'br')
+        return scope['jump_offsets'](ins, j, copy_first=True, far_base=True), [at + 20] * 5
+
+    def test_copy_beyond_old_search_limit(self):
+        actual, expected = self.run_site([NOP] * 75)
+        self.assertEqual(actual, expected)
+
+    def test_source_and_index_must_remain_unchanged(self):
+        for reg in (17, 18):
+            with self.subTest(reg=reg):
+                self.assertIsNone(self.run_site([NOP] * 65 + [mov(reg, 0, False)])[0])
+
+    def test_calls_and_undecodable_gaps_break_the_chain(self):
+        for word in (0x94000000, BLR(0), 0xe7ffdefe):
+            with self.subTest(word=hex(word)):
+                self.assertIsNone(self.run_site([NOP] * 65 + [word])[0])
+
+
 class MaskedPredecessor(unittest.TestCase):
     """The block `and w18,w17,#M; cmp w18,#3; b.hi; ldrsw x18,[x27,x6,lsl #2]; add; br x18` whose index x6 was masked from x17 in the block that branches to it.
     Word indices of the synthetic function: 0-1 base (adrp + add), 2-4 the predecessor (and x6, ubfx, cbz), 5 filler, 6 ret, 7-15 the dispatch block (and at 7, slots at 10, 12 and 14),

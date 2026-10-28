@@ -233,6 +233,12 @@ t_pfv: t_pfv.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pfv.m $(MTL_T_SRC) $(FW)
 t_integer_blend: t_integer_blend.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_integer_blend.m $(MTL_T_SRC) $(FW)
+t_missing_src1: t_missing_src1.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_missing_src1.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_missing_src1
+check_t_missing_src1: t_missing_src1
+	MTL_DEBUG_LAYER=1 ./t_missing_src1
+run: check_t_missing_src1
 t_primitive_restart: t_primitive_restart.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_primitive_restart.m $(MTL_T_SRC) $(FW)
 t_depth16_clear: t_depth16_clear.m $(MTL_T_DEP)

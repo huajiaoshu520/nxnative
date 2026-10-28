@@ -839,9 +839,13 @@ def run_failures(r, route):
 def smoke_diff(base, cand, route):
     """→ (status reasons by level, known failures, diff numbers)"""
     newfail, regress, changed, known = [], [], [], []
-    bf = set(x for r in base for x in run_failures(r, route)); cf_ = [x for r in cand for x in run_failures(r, route)]
+    # a failure is matched by its kind: the numbers in its parentheses are each run's own (the reach's max frame, a hang's second, the prebuild's pairs), so one the
+    # baseline had too stays known (Pikmin 4's route missed its reach in every baseline run, "(max 4797)", and in a candidate run, "(max 4774)"); the words stay, so a crash
+    # with another signal ("(SIGSEGV)" against "(SIGABRT)") or an exit with another status is new
+    kind = lambda x: re.sub(r'\(([^)]*)\)', lambda m: '(' + re.sub(r'(?<!exit )(?<![\w-])-?\d+(\.\d+)?(?![\w])', '#', m.group(1)) + ')', x)
+    bf = set(kind(x) for r in base for x in run_failures(r, route)); cf_ = [x for r in cand for x in run_failures(r, route)]
     for x in dict.fromkeys(cf_):
-        (known if x in bf else newfail).append(x)
+        (known if kind(x) in bf else newfail).append(x)
     d = {}
     bred = set().union(*[r.get('red', {}).keys() for r in base]) if base else set()
     nr = collections.Counter()

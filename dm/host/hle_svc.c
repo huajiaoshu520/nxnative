@@ -76,7 +76,8 @@ static size_t image_bytes(void) { size_t n = 0; for (int i = 0; i < g_nmod; i++)
 // Giant bss (modules with the patch area before the base, patch_nso.py FAR): the image bytes beyond the file part. Used memory was reported as "heap + 64 MB", where the 64 MB covers ordinary modules' code and data (Mario's two modules are about 74 MB together,
 // and the heap it opens = pool − 64 MB − 1.75 GB virtual address memory − 1 MB = 0x5be00000, as on hardware); Metroid Dread's main has about 1.8 GB of bss, the engine's static heap, which the Switch counts as used;
 // without it the game asks for pool − 64 MB = 3.15 GB of heap
-static size_t big_bss_bytes(void) { size_t n = 0; for (int i = 0; i < g_nmod; i++) if (g_mod[i].patch_off < 0) n += g_mod[i].size - g_mod[i].file_image_len; return n; }
+// Like image_bytes, exclude NROs: their buffers already belong to the game's heap. Counting every offline-mapped NRO's bss made FFX/X-2's used memory exceed its pool before any LoadModule.
+static size_t big_bss_bytes(void) { size_t n = 0; for (int i = 0; i < g_nmod; i++) if (!g_mod[i].nro && g_mod[i].patch_off < 0) n += g_mod[i].size - g_mod[i].file_image_len; return n; }
 
 // For memory accounting (memstat.m): the range of the whole guest address space block (base = NULL when not initialized)
 void svc_guest_range(uint8_t **base, size_t *size) { *base = g_as; *size = g_reserve; }
@@ -216,14 +217,23 @@ static int map_source_backed(uint64_t src, uint64_t size) {
     if (memory_contains((uintptr_t)g_alias, g_alias_cap, src, size))
         return !alias_unmapped(src - (uintptr_t)g_alias, size);
     module_t *m = module_of((void *)(uintptr_t)src);
-    // NRO reload restores backing outside this lock; it cannot be borrowed until
-    // that lifetime is integrated. Static module data is permanent.
-    if (!m || m->nro || !m->loaded || !memory_contains((uintptr_t)m->base, m->size, src, size)) return 0;
+    // Active NRO data is valid backing too (FFX/X-2's launcher allocates thread stacks from its bss). Deactivation below checks borrowers under this same lock before reload can restore it.
+    if (!m || !m->loaded || !memory_contains((uintptr_t)m->base, m->size, src, size)) return 0;
     uint64_t lo = m->data_off ? m->data_off : (m->ro_off ? m->ro_off : m->text_end);
     uint64_t hi = m->patch_off > 0 ? (uint64_t)m->patch_off : m->size;
     uint64_t off = src - (uintptr_t)m->base, perm = 3;
     module_data_query(m, off, &lo, &hi, &perm);
     return perm == 3 && hi >= lo && memory_contains(lo, hi - lo, off, size);
+}
+int svc_nro_deactivate(module_t *m) {
+    pthread_mutex_lock(&g_map_lock);
+    uint64_t base = (uintptr_t)m->base;
+    for (int i = 0; i < g_nmap; i++)
+        if (g_map[i].src < base + m->size && base < g_map[i].src + g_map[i].size) {
+            pthread_mutex_unlock(&g_map_lock); return 0;
+        }
+    m->loaded = 0;
+    pthread_mutex_unlock(&g_map_lock); return 1;
 }
 static void map_source_query(uint64_t addr, uint64_t *base, uint64_t *size, uint32_t *attr, uint64_t *perm) {
     uint64_t lo = *base, remaining = *size; // the final free page can end at 2^64

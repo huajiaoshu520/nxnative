@@ -93,6 +93,7 @@ dm/tools/nx_extract/*	*:*	NSP extraction: every game's resource inputs
 dm/mac/launcher.c	*:*	Mac app resource discovery and host launch
 dm/mac/pack_app.py	*:*	Mac app packaging: every game's bundled resources
 dm/gfx/tools/cpk.py	shader:stage:*	CRI archive input to shader scanning
+dm/gfx/tools/vbf.py	shader:stage:*	Virtuos archive input to shader scanning
 dm/gfx/tools/mvgl.py	api:gl	MVGL archive input to OpenGL shader scanning
 dm/gfx/tools/smash_arc.py	*:*	Smash archive input to shader and NRO scanning
 dm/gfx/tools/uepak.py	shader:stage:*	Unreal archive input to shader scanning

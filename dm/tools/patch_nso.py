@@ -555,7 +555,8 @@ done = set(); windows = []; jumps = {}; tabjumps = {}; tailcalls = set(); retrie
 def check_before_copy(insl, ctx, ld, idx):
     """The index copied from the checked register before the check, far back (DRAGON QUEST XI S main+0x2dd8cd0: mov w0,w18, then 41 instructions with two other jump tables on x0, then
     cmp w18,#4; b.hi; ldrsw x18,[x11,x0,lsl #2]; add x18,x18,x11; br x18). Accepted when the cmp and its b.hi come right before the load and the mov is the last writer of the index and of the
-    checked register before them (64 instructions back at most). The compiler checks one register and indexes with the other only when it knows they are equal; blocks in between that branch out
+    checked register before them. Kingdom Battle's GLSLC (subsdk0+0x7340b8) copies w17 into w18 71 instructions before the load, across two switches that preserve both registers: an arbitrary
+    64-instruction limit missed that copy. Follow the writers to the function's start, stopping at calls that can clobber either register or at gaps in decoded code. Blocks in between that branch out
     and back (main+0x2dd8ce0 → main+0x2dd8cb8) write neither. Tried only when every other form has failed (jump_offsets copy_first), so sites that rewrote before come out the same:
     the one br x18 of its kind among the 25,508 x18 sites of that main. → the cmp, or None"""
     k = ctx.index(ld)
@@ -565,8 +566,10 @@ def check_before_copy(insl, ctx, ld, idx):
     src, kl = m.group(1), insl.index(ld)
     def writes(p):   # capstone lists a compare's first operand as written (cmp w18,#4 at main+0x2dd8c30); it only sets the flags
         return set() if p.mnemonic in ('cmp', 'cmn', 'tst') else {'w' + p.reg_name(r)[1:] for r in p.regs_access()[1]}
-    for q in range(kl - 3, max(0, kl - 64) - 1, -1):
+    for q in range(kl - 3, -1, -1):
         p = insl[q]
+        if p.address + 4 != insl[q + 1].address: return None
+        if p.mnemonic in ('bl', 'blr') and any(int(r[1:]) <= 18 for r in idx | {src}): return None
         mm = re.fullmatch(r'(w\d+), (w\d+)', p.op_str) if p.mnemonic == 'mov' else None
         if mm and mm.group(1) in idx and mm.group(2) == src: break
         if writes(p) & (idx | {src}): return None

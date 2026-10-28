@@ -7,7 +7,7 @@ _Atomic uint64_t dm_present_ns;   // when the last present was made (hle_thread.
 #include <time.h>
 void *front_metal_layer(void) { return NULL; }   // no window in unit tests: present only counts
 module_t *module_of(const void *p) { (void)p; return NULL; }   // no guest modules in unit tests
-module_t g_mod[MAX_MOD]; int g_nmod;                            // host symbols that crash.c depends on
+module_t *g_mod; int g_nmod;                            // host symbols that crash.c depends on
 void svc_thread_dump(void) {}
 int dm_guest_as_contains(uintptr_t address) { (void)address; return 0; } // Tests use host-thread stacks.
 void crash_install(void);
@@ -78,6 +78,19 @@ int main(void) {
     P(nvnDeviceGetInteger)(&dev, (NVNdeviceInfo)0x30, &v); EXPECT("newest GPU code minor", 16, v);
     P(nvnDeviceGetInteger)(&dev, (NVNdeviceInfo)0x2F, &v); EXPECT("oldest GPU code major", 1, v);
     P(nvnDeviceGetInteger)(&dev, (NVNdeviceInfo)0x31, &v); EXPECT("oldest GPU code minor", 5, v);
+
+    NVNsamplerBuilder sb; NVNsampler sampler;
+    P(nvnSamplerBuilderSetDefaults)(&sb);
+    const uint32_t opaque_black[4] = {0, 0, 0, 1};
+    P(nvnSamplerBuilderSetBorderColorui)(&sb, opaque_black);
+    P(nvnSamplerInitialize)(&sampler, &sb);
+    EXPECT("unsigned integer border alpha is numeric", 1, ((samp_t *)&sampler)->p.border[3] == 1.f);
+    P(nvnSamplerFinalize)(&sampler);
+    const int opaque_white[4] = {1, 1, 1, 1};
+    P(nvnSamplerBuilderSetBorderColori)(&sb, opaque_white);
+    P(nvnSamplerInitialize)(&sampler, &sb);
+    EXPECT("signed integer border RGB is numeric", 1, ((samp_t *)&sampler)->p.border[0] == 1.f && ((samp_t *)&sampler)->p.border[2] == 1.f);
+    P(nvnSamplerFinalize)(&sampler);
 
     // 3. Memory pool: GPU address = the storage address given by the game
     static uint8_t poolmem[1 << 20] __attribute__((aligned(4096)));

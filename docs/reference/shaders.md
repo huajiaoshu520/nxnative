@@ -4,6 +4,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 ## Containers by engine
 
+### Phyre NVN effects in Virtuos VBF archives
+
+- **Symptom:** the shader split finds no game programs despite loose `.fx.phyre` effects and multi-GB `.vbf` archives.
+- **Cause:** Phyre stores GPU code immediately before its control section, often at unaligned offsets inside `RYHP` effect containers. Virtuos `SRYK` archives keep the effects in 64 KB zlib or raw blocks. These are neither BNSH nor whole GLSLC outputs.
+- **Fix:** `vbf.py` reads the Switch archive's two hash tables, file records, names and block lengths through the RomFS adapter. The split reads compiled effects and shader members without extracting textures or audio. `phyre_shaders` verifies the adjacent code header, the control's code length and stage, and preserves the original bytes and keys. Single-stage vertex programs use a pixel-input cover for padding.
+- **Found on:** [FINAL FANTASY X/X-2 HD Remaster](../../dm/games/0100BC300CB48000/README.md); base and both supplied DLC packs yield 5,752 unique shaders.
+- **Check:** `test_vbf.py` covers raw and zlib blocks, shared/missing members, truncation, unaligned effects, loose shader keys and inconsistent lengths. All 5,752 programs translate on the Mac.
+
 ### A file no reader reads
 
 - **Symptom:** the shader split stops on one archive with a Python traceback (an `IndexError` or `struct.error` naming no file), or a reader's `[RED]` line about a format it does not know, and nothing is written; the NSP script loses the build at the split.
@@ -126,10 +134,10 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 ### Shader records in Snowdrop SDF data slices
 
 - **Symptom:** the split finds no shaders in a RomFS made of `.sdfdata`, `.sdftoc` and `.sdfver` files.
-- **Cause:** Snowdrop stores the shaders in individually compressed records inside its `BERG` data slices. These SDF archives are a different format from RE Engine's shader definitions above. A shader record has a 20-byte header `{u32 0xabcd00c6, flags, 0, raw length, stored length}`, then one zstd frame; reflection data precedes the NVN sections inside it.
-- **Fix:** `shader_split.py` recognizes `BERG` by magic and reads the length-delimited compressed records (`snowdrop_shaders`). Every control section is followed immediately by its code, with lengths from control +0x20 and +0x704; they are byte-packed, so a control need not be aligned. A single record can hold more than one shader. Each section must pass the control / code / stage checks. Programs hold one stage, and the vertex shaders take the [single-stage cover](#single-stage-programs-paired-with-a-cover). Scanning for the record header avoids mistaking a coincidental zstd magic inside compressed data for another asset.
+- **Cause:** Snowdrop stores the shaders in individually compressed records inside its `BERG` data slices. A cache record can itself be wrapped in an SDF zstd chunk. These SDF archives are a different format from RE Engine's shader definitions above. A shader record has a 20-byte header `{u32 codec, flags, 0, raw length, stored length}`: `0xabcd00c5` precedes zlib data, `0xabcd00c6` a zstd frame; reflection data precedes the NVN sections inside it. Both supplied games use SDF version 22, so that version does not select the codec.
+- **Fix:** `shader_split.py` recognizes `BERG` by magic and reads the length-delimited compressed records (`snowdrop_shaders`). Every control section is followed immediately by its code, with lengths from control +0x20 and +0x704; they are byte-packed, so a control need not be aligned. A single record can hold more than one shader. Each section must pass the control / code / stage checks. Programs hold one stage, and the vertex shaders take the [single-stage cover](#single-stage-programs-paired-with-a-cover). The reader also peeks at each zstd frame's decoded header and finishes only frames beginning with a cache record. This finds nested records without treating a coincidental frame magic or a bare frame containing control-like bytes as a shader asset.
 - **DLC:** additional shader records ship in the DLC's data slices. The NSP script includes each extracted DLC RomFS as an extra shader root, without an ExeFS module, and fingerprints its index and extraction timestamps for split reuse. Vulkan and OpenGL builds include the DLC roots too. When installing or removing optional DLC changes an NVN shader union, the script uses an external profile with new shader tables only after every non-DLC shader row and fact matches the registered tables; package indices may change. The registered module builds, settings and build-gated cuts are preserved. A cached proof of this comparison permits repeat builds to reuse the split.
-- **Found on:** [Mario + Rabbids Sparks of Hope](../../dm/games/0100317013770000/README.md) (Snowdrop, SDF version 22).
+- **Found on:** [Mario + Rabbids Sparks of Hope](../../dm/games/0100317013770000/README.md) (zstd); [Mario + Rabbids Kingdom Battle](../../dm/games/010067300059A000/README.md) (zlib records, some wrapped in zstd chunks; shorter control sections and headerless compute code).
 
 ### SPK shader package in an MT Framework ARC
 
@@ -719,6 +727,13 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 ## Shaders compiled at run time
 
+### A GLSL language preamble is not a complete shader
+
+- **Symptom:** the NSP script stops with `captured only 0 run-time shaders` although the game reaches its frame loop with precompiled shaders.
+- **Cause:** the detection counted every `#version` occurrence. Snowdrop carries a GLSL header containing extensions and type macros, without an entry point; importing `glslcCompile` alongside it does not establish a boot shader compilation.
+- **Fix:** `profile_guess.py` counts embedded source strings containing both `#version` and `void main(...)` before their terminating NUL. The survey, build and split share that detector. Three Houses still has its nine complete boot sources; NRO imports retain their separate capture rule.
+- **Found on:** [Mario + Rabbids Kingdom Battle](../../dm/games/010067300059A000/README.md), whose only `#version` string is the 646-byte language preamble also carried by Sparks of Hope.
+
 ### Built-in shaders compiled with the game's own GLSLC
 
 - **Symptom:** shaders missing from the map that no game file holds.
@@ -793,6 +808,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Cause:** `dmsh_build.py`'s shader cache was keyed without the pairs.
 - **Fix:** the per-shader key covers the pairs, and a paired vertex shader's key also covers its pixel shaders' keys (`shader_key`, `pair_keyed`), so a change to a profile's pairs rebuilds what it affects ([Pixel shader inputs the vertex shader does not write](#pixel-shader-inputs-the-vertex-shader-does-not-write)).
 - **Found on:** [13 Sentinels: Aegis Rim](../../dm/games/01003FC01670C000/README.md).
+
+### Target selection keeps the shader analysis files in the cache
+
+- **Symptom:** a repeated iOS-only shader build crashes with `FileNotFoundError` for `<key>_b.json` in the Mac output directory; requesting only Mac libraries with `IOSOUT` set still compiles iOS side libraries.
+- **Cause:** target selection excluded the Mac directory from the per-shader cache entirely, but cache-hit processing, paired vertex padding and the profile tables still read its MSL and reflection. Side-library paths tested `IOSOUT` rather than the selected targets. Prefilling the Metal cache also compiled validation samples for unrequested targets.
+- **Fix:** cache and restore the Mac MSL and reflection for every target; require and copy metallibs only for selected targets. A cache entry without its analysis source is a miss. Clear `IOSOUT` when iOS is not selected and restrict prefill validation to selected targets. The NSP script writes only the requested target's reuse key.
+- **Found on:** [Celeste](../../dm/games/01002B30028F6000/README.md#shaders), while reviewing PR #275 (resolved).
+- **Check:** real Metal output and cache comparisons are recorded in Celeste's shader note above. `test_shader_toolchain_cache.py` covers geometry analysis files, incomplete entries and prefill selection; `test_nsp_mac.py` checks target-specific reuse keys.
 
 ### Function constants specialized at load
 

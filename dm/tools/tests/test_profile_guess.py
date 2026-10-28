@@ -8,6 +8,15 @@ sys.path.insert(0, str(REPO / 'dm/games'))
 import profile_guess as pg
 
 
+class GlslSources(unittest.TestCase):
+    def test_language_preamble_is_not_a_shader(self):
+        self.assertEqual(pg.glsl_sources(b'#version 450 core\n#define float4 vec4\n\0void main() {}\0'), 0)
+
+    def test_complete_embedded_sources(self):
+        image = b'#version 450\nvoid main() {}\0#version 450\nvoid main (void) {}\0'
+        self.assertEqual(pg.glsl_sources(image), 2)
+
+
 class UnrealMemory(unittest.TestCase):
     def test_initial_heap_fits_beside_the_engine_region(self):
         facts = {

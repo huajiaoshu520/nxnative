@@ -140,6 +140,15 @@ class Regress(unittest.TestCase):
         self.assertEqual(d['new_red'], [{'text': 'b #', 'count': 3}])
         lv, known, d = regress.smoke_diff(bad, bad, route)   # a failure the baseline has too is known, not new
         self.assertFalse(lv['NEW-FAIL']); self.assertTrue(known)
+        slow = [dict(base[0], reached=False, max_frame=90)]   # the reach missed in both, each run with its own max frame: known, not new
+        lv, known, d = regress.smoke_diff(slow, [dict(slow[0], max_frame=95)], route)
+        self.assertFalse(lv['NEW-FAIL'], lv); self.assertEqual(known, ['frame 100 not reached by 30 s (max 95)'])
+        self.assertTrue(regress.smoke_diff(base, slow, route)[0]['NEW-FAIL'])   # missed only in the candidate: new
+        segv, abrt = [dict(base[0], exit=-11, crash={'signal': 'SIGSEGV'})], [dict(base[0], exit=-6, crash={'signal': 'SIGABRT'})]
+        self.assertTrue(regress.smoke_diff(segv, abrt, route)[0]['NEW-FAIL'])   # a crash with another signal is new
+        q1, q139 = [dict(base[0], exit=1)], [dict(base[0], exit=139)]
+        self.assertTrue(regress.smoke_diff(q1, q139, route)[0]['NEW-FAIL'])   # so is an exit with another status
+        self.assertFalse(regress.smoke_diff(q1, [dict(base[0], exit=1)], route)[0]['NEW-FAIL'])
         quit0 = [dict(base[0], exit=0)]   # the game ended by itself before the route did: a failure even with exit status 0
         self.assertTrue(any('exited before the end' in x for x in regress.smoke_diff(base, quit0, route)[0]['NEW-FAIL']))
 

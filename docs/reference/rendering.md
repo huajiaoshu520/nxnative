@@ -742,6 +742,14 @@ The Vulkan layer (`dm/gfx/vk/hle_vk.m`) was written for Hades; Super Mario Galax
 - **Fix:** a descriptor now holds the texture, sampler state and buffer it was written with (retained), as a hardware descriptor holds a copy of the handle.
 - **Found on:** [Super Mario Galaxy 2](../../dm/games/0100FD8022DAA000/README.md) (issue 68). Through the opening and the first storybook stage the game allocates 22,785 descriptor sets and frees none, and destroys only 5 image views (and 1,244 images), so a stale element is rare: a Mac run that kept destroyed objects to catch their binds found none there.
 
+### An unwritten secondary blend source
+
+- **Symptom:** Metal refuses a pipeline with "Fragment shader does not write to render target color(0), index(1) that is required for blending"; the Metal 4 specialization path can instead abort after `MTLCompilerService` crashes in `AGCLLVMStatelessFragmentObject::buildBlendFactor`.
+- **Cause:** NVN blend state reads source 1, but the fragment shader's output map writes only colour 0. Passing that state directly to Metal asks its blend compiler to read an absent secondary output.
+- **Fix:** for a known output map without colour 1, `pso_desc` chooses zero for the unwritten secondary source, consistently with the translator's dual-source output initialization (`Translator.EmitOutputsInitialization`). Source-1 colour / alpha factors become ZERO, and their complements become ONE. The shader, blend equation, blending enable and write mask remain intact. A written secondary source, an unknown output map or a separately specialized fragment is left alone. `t_missing_src1` compares both Metal pipeline paths against a shader explicitly writing a zero secondary source.
+- **Open:** the original GPU's value for an unwritten secondary source has not been measured; zero is the host's defined choice for that missing value.
+- **Found on:** [Mario + Rabbids Kingdom Battle](../../dm/games/010067300059A000/README.md).
+
 ### Dual-source blending from output location 1
 
 - **Symptom:** Metal refuses the pipeline: "Fragment shader does not write to render target color(0), index(1)".

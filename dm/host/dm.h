@@ -27,7 +27,6 @@ static inline int dm_host_thread_join(pthread_t thread, void **result) {
     return r;
 }
 
-#define MAX_MOD 128   // the profile's modules (up to 8) and the NROs a game loads at run time (Super Smash Bros. Ultimate: 98)
 #define LOG(...) do { fprintf(stderr, "[dm] " __VA_ARGS__); fputc('\n', stderr); } while (0)
 #define die(...) do { LOG("FATAL " __VA_ARGS__); abort(); } while (0)
 
@@ -62,14 +61,15 @@ typedef struct {
     uint64_t init, init_array, init_arraysz;   // init = DT_INIT (the module's _init: registers the DSO and runs this module's init_array)
     uint64_t fini;             // DT_FINI (nn::ro::UnloadModule calls it)
     // NRO modules (nn::ro, loader.c "NRO modules"): mapped at start like the others, but they take part in symbol lookups only between LoadModule and UnloadModule
-    int nro, loaded;           // loaded: the profile's modules always; an NRO while the game has it loaded
+    int nro;
+    _Atomic int loaded;        // the profile's modules always; NRO activation also synchronizes with borrowed stack backing
     uint8_t sha256[32];        // an NRO's SHA-256 (what the game's NRR registers; LoadModule finds the module by the image it passes)
     uint32_t nro_size;         // an NRO's file size (header +0x18), the bytes the hash covers
-    uint8_t *pristine; size_t pristine_len;   // an NRO's data and bss as rewritten, restored before each load after the first
+    uint8_t *pristine; size_t pristine_len;   // an NRO's initialized data as rewritten; reload restores this and zeroes its bss
     unsigned loads;            // how many times the game loaded it
 } module_t;
 
-extern module_t g_mod[MAX_MOD];
+extern module_t *g_mod;         // allocated once from the NSO list and NRO manifest; module addresses stay stable
 extern int g_nmod;
 // main's build ID (empty if none): code with fixed addresses in a game's module runs only on the build they were found in
 static inline const char *dm_main_build(void) { for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) return g_mod[i].build_id; return ""; }
@@ -82,6 +82,7 @@ module_t *nro_find(const uint8_t sha256[32]);   // the mapped NRO with this hash
 int nro_refused(const uint8_t sha256[32]);      // an NRO the pack refused (an online SDK, nro.tsv "refused")
 void nro_load(module_t *m);     // relocate an NRO against the loaded modules and bind the earlier modules' imports it defines (the caller runs its init)
 void nro_unload(module_t *m);   // take an NRO out of the lookups and bind the imports that pointed into it again
+int svc_nro_deactivate(module_t *m);   // mark inactive under the memory map lock, refusing while a stack borrows its data
 void *module_sym(module_t *m, const char *name);
 int dm_sdk_major(void);   // SDK major version from the sdk module's version string (loader.c); 0 = unknown
 #define DM_SDK_OLD(major) ((major) > 0 && (major) <= 10)   // SDK 10 and older: NVN API 53, the shared-font address points at the TTF itself

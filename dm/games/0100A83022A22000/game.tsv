@@ -40,6 +40,9 @@ mem_stack	0x10000000
 app_pool	0xCD500000
 # The .NET runtime takes its settings from the environment (NativeAOT: getenv("DOTNET_…"), hex values); the GC's region range is 1.5 GB instead of 5 × its hard limit (hle_os.c game_env)
 game_env	DOTNET_GCRegionRange=60000000
+# malloc's StandardAllocator over 40 GB gets 2.5 GB on builds without the main cut (hle_svc.c, the host's StandardAllocator cap): the GC's 1.5 GB region comes after it, more than the
+# 256 MB the default leaves. With main 1.1.1 rewritten without its cut: 2.5 GB and the GC region at alias +2.59 GB, frame 3,900 in 75 s; the default 4.06 GB aborts at sdk+0x13a684
+stdalloc_cap	0xa0000000
 
 # ---- Shader split (shader_split.py: GLSLC outputs in shaders.nx.bin) ----
 shader_groups	/shaders.nx.bin=fna /data/=data

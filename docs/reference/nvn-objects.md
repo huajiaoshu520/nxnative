@@ -156,6 +156,14 @@ Games read this count as a position in their own command memory and size their h
 
 ## Queues and syncs
 
+### Bindings belong to each queue
+
+- **Symptom:** choosing X-2 after the collection launcher crashes in `keys_hash`, reading control address `0x8000000000`; the program object now contains command-buffer data.
+- **Cause:** the replay kept one global binding state across queue destruction and creation. X-2 binds its fragment program first, so combining stages dereferenced the launcher's freed vertex program. Distinct live queues could also inherit each other's bindings.
+- **Fix:** give every queue initialization a serial. Save and restore draw state and render-target state when submissions switch queues, resolve composite programs again, and invalidate encoder caches. Finalization discards that queue's saved state. Reusing the queue's storage starts with defaults and cannot recover old guest pointers.
+- **Found on:** [FINAL FANTASY X/X-2 HD Remaster](../../dm/games/0100BC300CB48000/README.md), launcher-to-X-2 handoff.
+- **Check:** `t_queue_origin` tests independent state, switching back, finalization and address reuse with a poisoned old program pointer, alongside its real GPU culling tests.
+
 ### Fence syncs recorded in command buffers
 
 - **Symptom:** `nvnCommandBufferFenceSync` unimplemented, every `SyncWait` timed out at once.
@@ -351,6 +359,14 @@ Games read this count as a position in their own command memory and size their h
 - **Check:** `t_dirty_race` covers the BUSY-page retry, stamp ordering, and a check between clock allocation and generation publication in both unprotect paths. The publication cases fail on main; the batched case also fails with the original PR applied.
 
 ## NVN entry points
+
+### Integer sampler border colours
+
+- **Symptom:** `[RED] NVN unimplemented function called: nvnSamplerBuilderSetBorderColorui` during renderer initialization.
+- **Cause:** only the floating-point setter was implemented.
+- **Fix:** implement signed and unsigned integer setters with numeric conversion into the sampler's border-colour state. Metal's existing selection among transparent black, opaque black and opaque white then sees integer zero and one correctly; bit-casting integer one to float would select the wrong colour.
+- **Found on:** [FINAL FANTASY X/X-2 HD Remaster](../../dm/games/0100BC300CB48000/README.md), launcher and both games.
+- **Check:** `t_nvn` invokes both setters through the real entry-point lookup and checks initialized sampler state.
 
 ### Version and capability checks that fail quietly
 
