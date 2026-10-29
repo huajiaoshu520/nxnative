@@ -717,6 +717,7 @@ Profile keys (`game.tsv`) whose value changes what the host does, set away from 
 | `pso_mtl4 on` | [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) |
 | `shader_key_skip 0x770+0x78` | [Batman: Arkham Knight](../../dm/games/0100ACD0163D0000/README.md) |
 | `stdalloc_cap 0xa0000000` | [Absolum](../../dm/games/0100A83022A22000/README.md) |
+| `ue_texture_pool 1000` | [DRAGON QUEST VII Reimagined](../../dm/games/0100A9D01C446000/README.md) |
 | `vconv_range on` | [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md) |
 | `fps_hold off` | [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md), [Paper Mario: The Thousand-Year Door](../../dm/games/0100ECD018EBE000/README.md) |
 | `perf_mode boost` | [Big Brain Academy: Brain vs. Brain](../../dm/games/0100620012D6E000/README.md), [Rhythm Heaven Groove](../../dm/games/0100D9F01D474000/README.md) |

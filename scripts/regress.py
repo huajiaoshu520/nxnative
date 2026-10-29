@@ -70,7 +70,7 @@
 #   not reached), REGRESSION (new [RED] lines, a screenshot beyond the tolerance, frame time, memory or prepare time worse beyond it), CHANGED (MSL or numbers differ, nothing worse),
 #   PASS. "known" lists failures the baseline has too (they do not fail the check).
 # Exit status: 0 = no regression, 1 = a regression (NEW-FAIL or REGRESSION) in some game, 2 = a harness error (and no regression found).
-import argparse, collections, concurrent.futures as cf, ctypes, datetime, hashlib, importlib.util, json, os, re, shutil, signal, struct, subprocess, sys, time, traceback
+import argparse, collections, concurrent.futures as cf, ctypes, datetime, fcntl, hashlib, importlib.util, json, os, re, shutil, signal, struct, subprocess, sys, time, traceback
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -355,9 +355,18 @@ def chain_key(tree, g, tools):
 
 def chain_build(tree, g, a):
     """The game's shaders built into its NSP work folder's regress/chain/<key>/ (reused when its manifest is there): → manifest"""
-    tools, jobs = a.tools_fp, a.jobs
-    v, inp, key = chain_key(tree, g, tools)
+    v, inp, key = chain_key(tree, g, a.tools_fp)
     out = game_root(g) / 'chain' / key
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out.parent / f'{key}.lock', 'w') as lk:   # one build per chain key: another regress.py building the same one (another session, the same game) is waited for, then reused
+        try: fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            say(f'  {g.id}: another process is building chain {key}: waiting for it'); fcntl.flock(lk, fcntl.LOCK_EX)
+        return chain_build_locked(tree, g, a, v, inp, key, out)
+
+
+def chain_build_locked(tree, g, a, v, inp, key, out):
+    jobs = a.jobs
     mf = out / 'manifest.json'
     if mf.is_file():
         m = json.loads(mf.read_text()); m['secs'] = 0
@@ -1202,6 +1211,7 @@ def replayer_for(tree, g, a):
     if dst.is_file(): return dst
     say(f'  {g.id}: building the replayer of {tree.id}')
     logs = game_root(g) / 'tmp'; logs.mkdir(parents=True, exist_ok=True); env = g.env(tree)
+    (tree.path / 'dm/gfx/tests/nvn_replay').unlink(missing_ok=True)   # one binary per tree but one header per game: make would keep another game's binary, newer than this game's header
     for d, target in (('dm/host', 'game_profile'), ('dm/gfx/tests', 'nvn_replay')):   # the profile header first: the tests' rule keeps a stale one
         log = logs / f'replayer-{tree.id}-{g.id}-{target}.log'
         rc, _ = run_heavy(['make', '-C', tree.path / d, f'GAME={g.id}', target], log, tree.path, env, a, f'{g.id} {target}')
@@ -1554,7 +1564,7 @@ def main():
     p = sub.add_parser('chain', help='the static checks only'); p.add_argument('--baseline'); p.add_argument('--candidate', default='worktree'); common(p, smoke=False)
     p = sub.add_parser('capture', help='capture one frame per game (the route\'s capture frame) and measure its replay noise'); p.add_argument('--rev', default='main')
     p.add_argument('--repeat', type=int, default=8, help='fresh replays that measure the capture\'s noise (default 8)')
-    p.add_argument('--capture-limit', type=float, default=300, help='seconds the game may take to reach the frame and write it (default 300)'); common(p)
+    p.add_argument('--capture-limit', type=float, default=600, help='seconds the game may take to reach the frame and write it (default 600: a covered window runs at a third of the rate)'); common(p)
     p = sub.add_parser('replay', help='replay each game\'s capture against a baseline and a candidate'); p.add_argument('--baseline'); p.add_argument('--candidate', default='worktree')
     p.add_argument('--repeat', type=int, default=3, help='fresh replays per revision (default 3)')
     p.add_argument('--wait-idle', type=float, default=900, help='seconds to wait for other builds to end before replaying (default 900)'); common(p, smoke=False)
