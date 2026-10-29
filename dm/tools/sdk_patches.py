@@ -111,10 +111,16 @@ CUTS = {
   # 1 GB placement alignment makes that region fail with 0x1803 in the compact
   # guest block. Platform workaround: use 32 MB alignment for large regions,
   # as for the equivalent SDK build below; allocation sizes and guards stay intact.
+  # Subnautica: Below Zero 1.23.55063 (Unity 2019.4.36f1) ships this build too. VammManager::AllocateAddressRegion's placement (sdk+0x37c2fc) has Sea of Stars' size classes:
+  # 64 KB under 2 MB, 2 MB under 4 MB, 4 MB under 32 MB, 32 MB under 1 GB, else 1 GB. Unity's virtual allocator (every region returns to main+0x75a6b4) reserves N MB + 252 KB, so each
+  # region spills past a class: measured with DM_REGIONS at the crash site of the opening, 336 live regions (92 of 2.25 MB, 60 of 4.25 MB, 33 of 16.25 MB, 2 of 32.5 MB) held 3.45 GB with
+  # 0.87 GB of gaps between them and ended at +4.37 GB of the 4.375 GB alias region. As for Sea of Stars, the three large classes take SDK 20's 2 MB
   '3644a6760469451cabc99f00c540acc2': [
     (0x37c140, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x37c1dc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
-    (0x37c33c, '0a00a852', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
+    (0x37c334, '0b40a052', '0b04a052', 'AllocateAddressRegion: alignment of regions from 32 MB to 1 GB mov w11,#0x2000000 → mov w11,#0x200000 (2 MB, as SDK 20)'),
+    (0x37c33c, '0a00a852', '0a04a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x200000 (2 MB, as SDK 20)'),
+    (0x37c340, '0808a052', '0804a052', 'AllocateAddressRegion: alignment of regions from 4 MB to 32 MB mov w8,#0x400000 → mov w8,#0x200000 (2 MB, as SDK 20)'),
   ],
   # Mario + Rabbids Sparks of Hope 1.6.2225577 (SDK 13.3.5): the same constructor
   # and placement code as nirvanA Initiative above. Snowdrop reserves a small

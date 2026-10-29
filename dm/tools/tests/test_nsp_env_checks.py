@@ -15,6 +15,7 @@ assert spec and spec.loader
 nsp = importlib.util.module_from_spec(spec); spec.loader.exec_module(nsp)
 sys.path.insert(0, str(REPO / 'dm/gfx/tools'))
 import dmsh_chain  # noqa: E402
+import tool_lock  # noqa: E402
 
 
 def fake_run(sdk_rc=0, devdir='/Applications/Xcode.app/Contents/Developer', xlate=(0, 'f21af1efa737a270\n', ''), translated='0', calls=None):
@@ -86,9 +87,9 @@ class Rosetta(unittest.TestCase):
         with mock.patch.object(nsp.sys, 'platform', 'linux'), mock.patch.object(nsp.subprocess, 'run', side_effect=AssertionError): nsp.check_native_python()
 
 
-class ChainCheck(unittest.TestCase):   # dmsh_build.py run directly (dmsh_chain.check_tools) names the translator that does not run, not an empty `xlate_source`
+class ChainCheck(unittest.TestCase):   # dmsh_build.py run directly (tool_lock.check_tools) names the translator that does not run, not an empty `xlate_source`
     def embedded(self, xlate):
-        with mock.patch.object(dmsh_chain.subprocess, 'run', fake_run(xlate=xlate)): return dmsh_chain.xlate_embedded()
+        with mock.patch.object(tool_lock.subprocess, 'run', fake_run(xlate=xlate)): return tool_lock.xlate_embedded()
 
     def test_embedded(self):
         self.assertEqual(self.embedded((0, 'f21af1efa737a270\n', '')), 'f21af1efa737a270')
@@ -99,7 +100,11 @@ class ChainCheck(unittest.TestCase):   # dmsh_build.py run directly (dmsh_chain.
 
     def check(self, xlate_source):
         with open(dmsh_chain.LOCK) as f: lock = dict(l.rstrip('\n').split('\t', 1) for l in f if '\t' in l and not l.startswith('#'))
-        with mock.patch.object(dmsh_chain, 'tools_now', lambda: {**lock, 'xlate_source': xlate_source}): return dmsh_chain.check_tools()
+        with mock.patch.object(tool_lock, 'tools_now', lambda: {**lock, 'xlate_source': xlate_source}): return tool_lock.check_tools()
+
+    def test_checks_are_outside_the_chain(self):   # a fix to a check changes neither V nor any shader's cache key (dmsh_build.py CODE_FP takes dmsh_chain.py's code form)
+        self.assertNotIn('tools/tool_lock.py', dmsh_chain.FILES)
+        for name in ('tools_now', 'check_tools', 'xlate_embedded'): self.assertFalse(hasattr(dmsh_chain, name), name)
 
     def test_check_tools(self):
         bad = self.check('does not run (You must install .NET to run this application.)')
