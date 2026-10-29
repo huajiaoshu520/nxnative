@@ -379,6 +379,13 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md) (13.0.5, `DM_WINDOW=1`).
 - **Check:** Breath of the Wild windowed with the change: its title, 60 fps, no GPU error.
 
+### A CPU-written window texture resolved where the present is queued
+
+- **Symptom:** an abort at the first present: `[RED] upload batches belong to the submit thread only: up_begin called on thread 'nvn-present-link'`, with `pkg_upload`, `tex_mtl` and `present_now` in the backtrace.
+- **Cause:** the game fills its window textures with `nvnTextureWriteTexels` at boot and presents one before drawing into it. A texture whose content comes from its storage (CPU-written, packaged) is uploaded when it is first resolved, in an upload batch only the submit thread may open, and the first resolution of this one was `present_now` on the present thread.
+- **Fix:** `present_enqueue`, on the thread that queues the present, resolves a storage texture (`tex_from_storage`) when that is the submit thread and commits the upload batch (`up_flush`), so the display command buffer comes after the upload on the queue and the present thread finds the texture uploaded. For every game; a texture that is not taken from its storage is resolved on the present thread as before.
+- **Found on:** [Bastion](../../dm/games/010038600B27E000/README.md) (1.0.0, SDK 5.4.0: both 1920x1080 window textures written by `main+0x9374`).
+
 ### The present upscales through MetalFX
 
 - **Symptom:** a game that renders below the screen's resolution looks soft on a phone, in a large Mac window or on a 4K screen.
