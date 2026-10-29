@@ -264,6 +264,13 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Fix:** the texture is upgraded to render-target use first, as format views are upgraded (`tex_upgrade`; [Integer views for images a shader declares uint or int](#integer-views-for-images-a-shader-declares-uint-or-int)).
 - **Found on:** [Monster Hunter Rise](../../dm/games/0100B04011742000/README.md) (the clear of a 32x80 packaged texture); [Paper Mario: The Thousand-Year Door](../../dm/games/0100ECD018EBE000/README.md) (a format-converting copy of a 128x128 RGBA8 render target into a packaged RG8 texture, mirrored in Y, as the boat arrives in Rogueport, about frame 10,950: `copy_t2t_draw` declined a destination made without render-target use).
 
+### A texture upgrade while a draw binds its arguments ends the pass
+
+- **Symptom:** `CRASH sig=11 addr=0x794` in `-[AGXG16GFamilyRenderContext_mtlnext drawIndexedPrimitives:…]+0x50`, called from `draw_`, right after the log line `texture upgraded to allow format views` (Metal API validation reports nothing first).
+- **Cause:** `draw_` takes its render encoder from `rp_begin_ex`, then binds the program's arguments (`encode_args`). Binding a texture view of another format calls `tex_by_id`, which upgrades a texture made without `PixelFormatView` (`tex_upgrade`); the upgrade copies the old texture through `blit()`, which ends the render pass (`rp_end`). The draw then encoded on that ended encoder: the driver reads the context it released at end of encoding (`ldr x21, [x0, ivar]`, then `[x21 + 0x794]`).
+- **Fix:** after `encode_args`, a draw whose pass ended (`g_enc != en`) is encoded again from the start in a new pass; the texture is already upgraded, so the second binding does not end it (a second end would be logged red and the draw skipped).
+- **Found on:** [Need for Speed: Hot Pursuit Remastered](../../dm/games/010029B0118E8000/README.md) (a 4096x1024 texture sampled through a view of another format at its first loading screen).
+
 ### Compressed textures as render targets through an uncompressed shadow
 
 - **Symptom:** `render target is a compressed-format texture …`; the pass's draws did nothing (the attachment was left out), or the pipeline-descriptor validation aborts the process.
@@ -692,6 +699,13 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Found on:** [Absolum](../../dm/games/0100A83022A22000/README.md) (FNA3D's NVN driver, `FNA3D_Driver_NVN.cpp`).
 
 ## Uniforms, copies and ordering
+
+### Depth plane copies between depth formats
+
+- **Symptom:** `[RED] texture→texture copy case not implemented: 1920x1080x1→1920x1080x1 flags 0 format 260→252 3D 0→0`.
+- **Cause:** the game copies its depth-stencil target (Metal `Depth32Float_Stencil8`, 260) into a depth-only texture (`Depth32Float`, 252) of the same size. A Metal blit copies only between equal formats, and the draw path does not take depth formats.
+- **Fix:** such a copy, either way between the two formats, goes through a staging buffer kept from copy to copy: the 32-bit float depth is copied out of the source with `MTLBlitOptionDepthFromDepthStencil` and into the destination's depth plane the same way (`nvn_mtl.m`, the texture copy).
+- **Found on:** [EA SPORTS FC 27](../../dm/games/0100C49025D3E000/README.md) (Frostbite): from the title on.
 
 ### Inline uniform updates as ordered GPU copies
 
