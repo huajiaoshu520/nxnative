@@ -89,6 +89,28 @@ test (an uninstrumented system framework, a test fixture); then it gets an entry
 with its reason. A fix removes any existing entry in the same change: the job
 then checks the repaired code. A change to `ignorelist.txt` rebuilds the ASan tests.
 
+A `coverage` job measures which lines the tests run, and reports only: no
+threshold fails it. It builds the host unit tests and the CPU texture test again
+with clang's source-based coverage (`make coverage`, into `build/cov` and `cov/`;
+`dm/sanitizers/coverage.mk`), and runs the tool tests (`dm/tools/tests`) under
+coverage.py over `dm/tools`, `dm/gfx/tools`, `dm/games` and `scripts`
+(configured in `pyproject.toml`, pinned in `.github/requirements/coverage.txt`).
+`dm/tools/coverage_report.py` turns the reports into the job summary: line
+coverage per area, the 15 largest files and, on a pull request, the changed lines
+the tests run and those they do not. The C areas list only the files a test
+compiles. The raw reports are the job's `coverage` artifact. Locally (about two
+minutes on an Apple-silicon Mac, most of it the tool tests):
+
+```sh
+make -C dm/host/tests GAME=010015100B514000 -j8 coverage
+make -C dm/gfx/tex/tests coverage
+python3 -m pip install -r .github/requirements/coverage.txt   # in a venv
+DM_GAME=010015100B514000 python3 -m coverage run -m unittest discover -s dm/tools/tests
+python3 -m coverage combine && python3 -m coverage json   # writes coverage.json
+python3 dm/tools/coverage_report.py --host dm/host/tests/build/cov/coverage.lcov \
+    --textures dm/gfx/tex/tests/cov/coverage.lcov --python coverage.json --base main
+```
+
 A separate iOS job uses XcodeGen and the production project template to compile
 `Launcher.swift`, link the complete app and stage synthetic resources. It uses
 tiny zero-filled embedded modules, needs no game files or keys, and neither
@@ -153,6 +175,32 @@ SDKROOT=$(xcrun --show-sdk-path) CLANG_BIN=/path/to/llvm/bin/clang CC=/path/to/l
 /path/to/fuzz-venv/bin/python dm/tools/fuzz/fuzz_shader_split.py --time 300 --findings /path/to/scratch/findings
 ```
 
+`.github/workflows/lint-c.yml` checks the C and Objective-C of `dm/host` and
+`dm/gfx` on a Mac (the sources need the macOS SDK), in about five minutes. It
+builds a compile database from dry runs of the Makefiles, then runs clang-tidy
+with the bug-finding checks of `.clang-tidy` and clang's static analyzer. That
+is a ratchet like the Python one: `dm/tools/lint_c_baseline.tsv` counts the
+findings per file and check (no line numbers, so moving code changes nothing),
+and the job fails when a file has more findings of a check than listed, when it
+has fewer (a fixed finding still listed), and when a pull request's baseline
+grew over its base's. So the baseline only shrinks: a new finding is fixed, or,
+when it is a false positive, silenced on its line with `// NOLINT(<check>)` and
+a reason. Apple's toolchain has no clang-tidy: use the LLVM release CI
+downloads (`LLVM_VERSION` in the workflow, from
+github.com/llvm/llvm-project/releases, or Homebrew's `llvm@23` at that
+version), since another version finds other things:
+
+```sh
+export LLVM=/path/to/LLVM-23.1.4-macOS-ARM64   # the unpacked release (bin/clang-tidy); else Homebrew's llvm@23
+python3 dm/tools/lint_c.py compdb              # dm/host/gen/compile_commands.json (GAME= picks the profile header)
+python3 dm/tools/lint_c.py tidy -j 8           # the check CI runs; FILE... checks only those sources
+python3 dm/tools/lint_c.py tidy --update       # after fixing findings: lowers the counts, never adds one
+```
+
+Raising `LLVM_VERSION` takes a new baseline in the same change
+(`tidy --rebaseline`; `dm/tools/tests/test_lint_c.py` checks that the two name
+the same release).
+
 ## The packing script in detail
 
 `scripts/build_ipa_from_nsp.py` (`-h` lists every option):
@@ -212,7 +260,7 @@ What the script does:
    So does an OpenGL game with no GLSL source in its RomFS or `main` (Balatro: LÖVE puts its shaders together at run time, in Lua): `DM_GL_CAPTURE` at `<id>_build/extract/<version>/gl_capture` until every file in the profile's `gl_capture.tsv` is there (Balatro: 35, made before its first frame). Without the profile's tables (a provisional profile) a capture stops once nothing has been added for 20 s.
    The Vulkan and GL captures also run on a Mac whose GPU has no Metal 4, such as a virtual Mac (GitHub's `macos-26` runner). Those two layers draw on classic Metal queues of their own, so there the NVN layer starts only its classic part and drops every present, which a headless capture does not need (`nvn_mtl.m` `mtl_device_classic`; `DM_TEST_NO_METAL4=1` does the same on any Mac). The GLSLC capture boots an NVN game, which needs Metal 4.
 5. It splits out the shaders from the game and every extracted DLC RomFS and checks them against the profile's tables (a Vulkan profile: it translates the RomFS's SPIR-V and the capture with `vk_shaders.py` instead; an OpenGL one: the GLSL sources and the capture with `gl_shaders.py`). Optional DLC that changes only the NVN shader union gets new tables in an external profile after the non-DLC shaders and facts have matched; registered module builds and fixes stay in use.
-6. It builds the iOS shader libraries with the in-repo SPIRV-Cross (`dm/gfx/tools/spirv_cross_bin`) and the Metal compiler in `dmsh_chain.lock` (Xcode 27.1). Another Metal compiler stops an NVN game's build before its shader steps. Issue #242 reported corruption with an untested compiler; its role remains unconfirmed. `--allow-other-metal` (`ALLOW_OTHER_METAL = True` in Spyder; `DM_ALLOW_OTHER_METAL=1` for `own_compilers.py`) permits it and reports the actual version. If a registered profile's `dmsh_chain.h` does not hold the version the source tree gives (a chain change left it behind), the script writes it again before any host is built, so it shows as changed in the checkout (`dmsh_build.py` would stop otherwise). Then the script makes the profile's `c1_full.tsv` and `cb_extent.tsv` from this build's Mac outputs when they are missing or name another chain. These two tables are not committed and git ignores them; `build_ipa.sh` stops without a current `c1_full.tsv`. Each line in the output names the file.
+6. It builds the iOS shader libraries with the in-repo SPIRV-Cross (`dm/gfx/tools/spirv_cross_bin`) and the Metal compiler in `dmsh_chain.lock` (Xcode 27.1). Another Metal compiler stops an NVN game's build before its shader steps; the compiler is the selected Xcode's, so a Mac with a newer Xcode installs 27.1 beside it and selects it ([Metal compiler of a newer Xcode](reference/shaders.md#metal-compiler-of-a-newer-xcode)). Issue #242 reported corruption with an untested compiler; its role remains unconfirmed. `--allow-other-metal` (`ALLOW_OTHER_METAL = True` in Spyder; `DM_ALLOW_OTHER_METAL=1` for `own_compilers.py`) permits it and reports the actual version. If a registered profile's `dmsh_chain.h` does not hold the version the source tree gives (a chain change left it behind), the script writes it again before any host is built, so it shows as changed in the checkout (`dmsh_build.py` would stop otherwise). Then the script makes the profile's `c1_full.tsv` and `cb_extent.tsv` from this build's Mac outputs when they are missing or name another chain. These two tables are not committed and git ignores them; `build_ipa.sh` stops without a current `c1_full.tsv`. Each line in the output names the file.
    It then compares the build with the game's previous one, the newest other `b-*/` in `<id>_build/shader/cache/` (the one the last chain change left: a build that succeeds removes the older chain folders and their keys, so each game keeps one) (`dm/gfx/tools/shader_regressions.py`, which reads the two `_b_build.json` reports). The translation chain is one for every game, so a translator change is tested only on the games its author owns; shaders that translated before and fail now are listed in `logs/shader_regressions.log` and stop the build ([GitHub issue #272](https://github.com/seedds/nxnative/issues/272)). Report them; `--allow-shader-regressions` (`ALLOW_SHADER_REGRESSIONS = True` in Spyder) packs the app without them.
 7. It calls `build_ipa.sh`. Xcode builds the app in the game's own build folder (`<id>_build/ipa/build/ios/pkg/dd`: `build_ipa.sh` sets `SYMROOT` and `OBJROOT`, which a custom build location in Xcode's settings does not override), so a repeat build compiles only what changed and two games built at once never write the same app. Then `dm/ios/tools/pack_ipa.py` packs it with the shader libraries, the add-on content and the RomFS straight from where they are. It reads and deflates files on all cores and writes at about the T7's write speed (300 MB/s): Breath of the Wild's 16 GB IPA takes 57 s, Info-ZIP's copy and zip took 2 min 50 s. A repeat pack reuses the previous IPA through `<ipa>.idx`, which records each packed file's size, times and inode: the unchanged leading entries stay in place in an APFS clone of the old IPA, and after the first changed entry, an unchanged file is copied compressed from it (both only when the source folder is on APFS; elsewhere every file is deflated again). `build_ipa.sh` passes the RomFS, the add-on content, the pipeline archive and the shader libraries before the app, so after a host fix only the app is written: Breath of the Wild repacks in 12-23 s instead of 105-163 s.
 
@@ -289,7 +337,7 @@ python3 scripts/regress.py replay              # replay those captures against t
 
 `--games <id>,…` selects games, `--baseline` / `--candidate` take any revision (`worktree` is this checkout), `--lock` (or `DM_MEASURE_LOCK`) is the measuring lock `bench.py --lock` shares, held only while a game runs, and `REGRESS_SKIP=<id>,…` leaves out a game someone else is working on. Source trees and public reports go under `--root` (`REGRESS_ROOT`), the games' NSP folders are found under `--games-dir` (`REGRESS_GAMES`); both have no default, since they depend on the machine, and go before the command (`regress.py --root <drive>/harness --games-dir <drive>/nsp check …`). All commands except `impact` require both paths; `impact` reads only git and committed manifests, prints its report without either path, and saves it with `--out` or under an existing configured root. Each revision is checked out once into `trees/`, and its chain, host and rewriter come from there. Game-derived files (shader libraries, rewritten modules, profile copies, saves, screenshots and baselines) stay in the game's NSP folder at `<id>-work/regress/`. Shader tools write generated tables only into those profile copies. The games are the NSP folders under `--games-dir` (`REGRESS_GAMES`). The exit status is 0 without a regression, 1 with one, and 2 when the harness could not check a game.
 
-The default selection keeps every local build for the chain checks; games with a `smoke.tsv` also run its route. A game without a route does not build a host or run. `check --no-smoke` and `baseline --no-smoke` perform only the chain and interface checks. The chain cache includes the shader package's contents and the split's fallback `pso_pairs.tsv`; Vulkan builds include captured SPIR-V from the packed version's `vk_capture` folder. Interface checks run again with each revision's archive planner and profile even when the libraries are reused. Stored smoke baselines are reused only while the route, save bytes, build artifacts, compilers, machine and run settings match; older records are recorded again. Each candidate run must supply its scheduled screenshots, and a prebuild that crashes or times out fails the run. With repeated runs, every candidate screenshot is compared with its closest baseline screenshot.
+The default selection keeps every local build for the chain checks; games with a `smoke.tsv` also run its route. A game without a route does not build a host or run. Each revision runs its own `dm/games/<id>` profile; the build's `<id>_build/profile/<id>` runs instead only when it is derived (`<id>.derived.key` beside it) or the game has no profile in `dm/games` (the games line says `the build profile`), so a provisional profile left from before the game's profile was added is not tested in its place. `check --no-smoke` and `baseline --no-smoke` perform only the chain and interface checks. The chain cache includes the shader package's contents and the split's fallback `pso_pairs.tsv`; Vulkan builds include captured SPIR-V from the packed version's `vk_capture` folder. Interface checks run again with each revision's archive planner and profile even when the libraries are reused. Stored smoke baselines are reused only while the route, save bytes, build artifacts, compilers, machine and run settings match; older records are recorded again. Each candidate run must supply its scheduled screenshots, and a prebuild that crashes or times out fails the run. With repeated runs, every candidate screenshot is compared with its closest baseline screenshot.
 
 Per game it checks:
 - **Chain** (no GPU): the shaders built by each revision's `dmsh_build.py` (a Vulkan game: `vk_shaders.py`), shader by shader: built or failed (newly failing by the rule of `shader_regressions.py`, which it imports; a new shader that fails is listed apart), and the SHA-256 of the MSL, of the reflection without its chain fields and of the variant libraries. A build is kept per chain version, profile inputs and compilers (`<NSP folder>/<id>-work/regress/chain/`), so a revision that did not change the chain reuses it, and the build takes the game's own shader cache (`DMSH_CAS`), so unchanged MSL is not compiled again. A changed chain still translates every shader: Breath of the Wild's 19,592 took 14 minutes on an M2 Max.
@@ -614,6 +662,21 @@ Each game's notes are in its profile folder, `dm/games/<id>/README.md`: what the
 | `insn_census.py` | Counts the instruction sites the rewriter must handle |
 | `nso_code.py` | Function ranges from `.eh_frame` and the data blocks in a text segment, which the rewriter and the census leave out |
 | `nso_syms.py` | Compares the SDK import surface of two games, or of one game (`-` for the reference) with the host hooks |
+| `il2cpp_sym.py` | Original NSO/NRO + matching Il2CppDumper `script.json` → the managed method whose function (`.eh_frame`) holds each module-relative offset; `--dis START[:END]` / `--count N` annotates direct branch targets ([IL2CPP names](#il2cpp-method-lookup)) |
 | `nro_collect.py` | The NRO modules a game registers in its NRRs, found as loose files, among an indexed archive's current files (`data.arc`) or by a scan, written out for the rewriter with `nro.tsv`; online SDKs are listed as refused |
 | `nvn_slots_got.py` | Builds the NVN fetch table and call sites (GOT-indirect loaders) |
 | `loader_census.py` | Which of the functions a name loader fetches (glad's GL loader over `eglGetProcAddress`, NVN's C proc loader) the code really calls: the GOT slots or globals the loader stores, loaded by other code (followed through registers, relocated GOT entries and `csel`, for LÖVE's glad) |
+
+### IL2CPP method lookup
+
+Run [Il2CppDumper](https://github.com/Perfare/Il2CppDumper) on the original module and its matching `global-metadata.dat` to produce `script.json`, then use:
+
+```bash
+python3 dm/tools/il2cpp_sym.py "$W/extract/exefs/main" "$W/il2cpp/script.json" 0x40c47c 0x40c478
+python3 dm/tools/il2cpp_sym.py "$W/extract/exefs/main" "$W/il2cpp/script.json" --dis 0x40c440 --count 24
+# An exclusive end offset can replace the count: --dis 0x40c440:0x40c4a0
+```
+
+The tool loads NSO/NRO segments with `nso.py`, prints the `ScriptMethod` name plus the offset into it, and annotates direct `b`/`bl` targets with Capstone. Aliases at one address are sorted and shown together. The table has no method sizes and leaves out native code, so the tool bounds each name by the module's `.eh_frame` functions (`nso_code.fde_ranges`; IL2CPP keeps unwind tables for its C++ exceptions, and they cover 98% of BALL x PIT's text): the nearest preceding method is named only when it starts in the function that holds the address. An address in a function no method starts prints `unknown (function 0x…+0x…)`, and one outside every function `unknown`; a module without `.eh_frame` ranges is an error. Use the exact original module/build that produced the table: inputs and `ScriptMethod.Address` must be module-relative offsets, not compressed-file offsets or absolute guest/Ghidra addresses. It rejects out-of-text addresses.
+
+For NSOs with separate file and memory offsets, Il2CppDumper's [NSO reader](https://github.com/Perfare/Il2CppDumper/blob/master/Il2CppDumper/ExecutableFormats/NSO.cs) may fail with `Sequence contains no matching element` while mapping MOD0. If its source still has `Position = header.TextSegment.FileOffset + modOffset + 4;`, change that line to `Position = MapVATR(modOffset) + 4;` and rebuild the dumper with the SDK its project targets. The correction is conditional and applies to the external dumper; it is not vendored here. Keep metadata, dumper output and all extracted files in the game's NSP work folder.

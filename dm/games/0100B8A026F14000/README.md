@@ -8,14 +8,14 @@ Update 1.0.1 (v65536), SDK 20.5.17, Unreal Engine 5.6.1, NVN and CRIWARE sound/m
 
 | Setting | Where | Why |
 |---|---|---|
-| FMallocBinned3 constructor cut `main+0x137f0` | [`patches.py`](patches.py), `main` `b7f965b9…` | verified `bl 0xae770` -> `nop`; the constructor reserves 38 GB of address space. The host takes over the object at `main+0x77c6210` with the 32-slot vtable layout at `main+0x67df800` (`hle_uemalloc.c`, `UE5_6`) |
+| FMallocBinned3 constructor call cut `main+0x137f0`, with gate `OBS_UE_MALLOC` on it | the rewriter's engine-wide rule (`dm/tools/ue_malloc.py`), no build ID | the constructor reserves 38 GB of address space; the host takes over the object at `main+0x77c6210` with the 32-slot vtable layout at `main+0x67df800` (`hle_uemalloc.c`, the UE 5.6 layout). This build's own cut until 2026-10-30 (`bl 0xae770` → `nop`, verified by disassembly) |
 | 4064 MB engine region in the 5 GB guest block | [`game.tsv`](game.tsv) | the same layout as the JP release: its [memory section](../0100606026F12000/README.md#memory) explains why a 2 GB region is too small. The shared `sdk` build's node-area cut already applies |
-| `fps_target 60`, game present interval | `game.tsv`, `hle_fpslock.c` | write both copies of this build's `rhi.SyncInterval` through the console object at `main+0x8adca10+0x10`; #289 identified its registering constructor at `main+0x149e0a0`. The engine then requests interval 1 itself. `DM_FPS_TARGET=30` restores interval 2; `0` leaves the game's setting alone |
+| `fps_target 60`, game present interval | `game.tsv`, `hle_fpslock.c` | write both copies of `rhi.SyncInterval` (and `t.MaxFPS`, which the game leaves unset), found by name by the rewriter (`dm/tools/ue_cvar.py`); #289 identified its registering constructor at `main+0x149e0a0` and the object at `main+0x8adca10`, this build's row until 2026-10-30. The engine then requests interval 1 itself. `DM_FPS_TARGET=30` restores interval 2; `0` leaves the game's setting alone |
 | `tex_dyn_slots on` | `game.tsv` | the same 2,077 particle vertex shaders as the JP release select separate textures dynamically through `c2` |
 | Buffer texture/image types and unsigned fragment output | [`shader_facts_manual.tsv`](shader_facts_manual.tsv) | #289 supplies 35 keyed facts, including #304's `c254eaa40e0c4f1e` unsigned output for `CopyStencilToLightingChannelsPS` and its `R8Uint` attachment. The generated facts merge these over the control-section facts |
 | `pad_layout full` | `game.tsv` | the field uses both sticks, including its camera |
 
-The regional `main` has its own build-gated allocator, frame-rate and rewriter registrations. `subsdk0=ab62fe8edd07a6a293f885d54359e559` and `sdk=0023a1b06130cd795f7bc4613772af0a` are shared with the JP release. No additional SDK cut is needed, and no `present_interval display` override is needed for the registered frame-rate write.
+The regional `main` needs no registration of its own: the rewriter finds its allocator and console variables by the engine's own names (`ue_malloc.py`, `ue_cvar.py`). `subsdk0=ab62fe8edd07a6a293f885d54359e559` and `sdk=0023a1b06130cd795f7bc4613772af0a` are shared with the JP release. No additional SDK cut is needed, and no `present_interval display` override is needed for the registered frame-rate write.
 
 ## Shader tables and prewarm
 
