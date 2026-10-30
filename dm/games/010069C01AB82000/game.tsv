@@ -19,11 +19,13 @@ romfs_marker	Project/Content/Paks/pakchunk0-Switch.pak
 zip_store	.pak:.metallib
 
 # ---- Memory ----
-# nninitStartup (+0x1b88a10) reads this option in MB and otherwise reserves 62 GB.
+# nninitStartup (+0x1b88a10) reserves one address region for the engine, 62 GB by default;
+# the rewriter's engine-wide gate on the store of its size
+# (dm/tools/ue_region.py; hle_svc.c) gives it what the alias region has room for
+# (2.81 GB; until 2026-10-31 -SwitchVirtualAddressSpaceSize=2048 in game_args).
 # FMallocBinned3's 37 GB pool reservation is replaced by the host's malloc zone
 # (the rewriter's engine-wide cut, dm/tools/ue_malloc.py; hle_uemalloc.c). The SDK-wide
 # rules give its SDK build the 62 MB node area and 2 MB region alignment (sdk_patches.py).
-game_args	-SwitchVirtualAddressSpaceSize=2048
 mem_reserve	0xF0000000
 mem_alias	0xC8000000
 mem_stack	0x10000000

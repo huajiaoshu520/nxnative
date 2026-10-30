@@ -9,7 +9,7 @@ Status (2026-10-26): opening gameplay tested on the Mac with the capped memory l
 | Setting | Where | Why |
 |---|---|---|
 | FMallocBinned3 constructor call cut at `main+0x1f2f63c`, with gate `OBS_UE_MALLOC` on it | the rewriter's engine-wide rule (`dm/tools/ue_malloc.py`), no build ID, `hle_uemalloc.c` | its 37 GB pool reservation cannot fit the iPhone address space; the host supplies the UE4 allocator vtable. Until 2026-10-30 this build's own cut, with the gate at `+0x1f2f644` (checked on its main from the archive drive) |
-| `game_args -SwitchVirtualAddressSpaceSize=2048` | [game.tsv](game.tsv) | `nninitStartup` reads this in MB; otherwise it reserves 62 GB |
+| Engine region given what the alias region has room for, 2.81 GB: gate `OBS_UE_REGION` on the store of its size, `main+0x1b89034` | the rewriter's engine-wide rule (`dm/tools/ue_region.py`), no build ID; the host's room (`hle_svc.c`) | Unreal's `nninitStartup` reserves 62 GB by default. Until 2026-10-31 `game_args -SwitchVirtualAddressSpaceSize=2048`, a 2 GB region |
 | `mem_reserve 0xF0000000`, `mem_alias 0xC8000000`, 256 MB stacks | `game.tsv` | a 3.75 GB guest block with a 2 GB engine region and a 128 MB heap region; the C library heap request is 6 MB |
 | `sys_resource 0x2800000` | `game.tsv` | the NPDM declares 40 MB of system resource |
 | Node-area and large-region alignment cuts | `dm/tools/sdk_patches.py` SDK-wide rules, SDK build `86188952…` | the SDK-wide rules' cuts on this build: 62 MB node area, 2 MB region alignment (SDK 20's) |
@@ -27,7 +27,7 @@ Status (2026-10-26): opening gameplay tested on the Mac with the capped memory l
 
 ## Memory
 
-- **Current:** `nninitStartup` is `main+0x1b88a10`. It parses `-SwitchVirtualAddressSpaceSize=` with a value up to 4095 interpreted as MB (`+0x1b88d58`), and always calls `AllocateAddressRegion` (`+0x1b89038`) after choosing the requested or default size. It requests a 6 MB C-library heap at `+0x1b89060`.
+- **Current:** `nninitStartup` is `main+0x1b88a10`. It parses `-SwitchVirtualAddressSpaceSize=` with a value up to 4095 interpreted as MB (`+0x1b88d58`), and always calls `AllocateAddressRegion` (`+0x1b89038`) after choosing the requested or default size; the rewriter's gate on the size's store before it (`+0x1b89034`) gives the region what the alias region has room for, 2.81 GB ([Unreal's engine address region and its options](../../../docs/reference/memory.md#unreals-engine-address-region-and-its-options)). It requests a 6 MB C-library heap at `+0x1b89060`.
 - **Resolved by the allocator replacement:** `GCreateMalloc` (`+0x1f2f610`) mallocs 0x1c38 bytes, keeps the object in x19, calls `FMallocBinned3`'s constructor (`+0x1578bc0`) and stores GMalloc at `+0x72c1b10`. The constructor stores vtable `+0x5a7f0a8` and reserves `0x940000000` bytes at `+0x15790b0`. A baseline maps up to +38.5 GB; limiting the region to 2 GB without the replacement crashes during static initialization in the error-report path (`+0x294eb98`, a read from `0x30c0`). The measured vtable has the UE4 layout: TryMalloc / TryRealloc call slots 3 / 5; slots 17 and 18 return 1, slot 19 returns `Binned3`, and there is no OnMallocInitialized slot. See [Unreal's FMallocBinned3 replaced by the host allocator](../../../docs/reference/memory.md#unreals-fmallocbinned3-replaced-by-the-host-allocator).
 
 ## Files and shaders
@@ -59,6 +59,7 @@ The NSP script's build directory is `<NSP folder>/010069C01AB82000_build`; analy
 
 ## Open
 
+- The engine region's gate (2.81 GB instead of the 2 GB `game_args` gave) has not been run on this game yet: the `[mem] Unreal's engine region` line in a boot's log shows it.
 - Combat, later areas and the Canon of Vengeance route remain untested, at either frame rate.
 - 60 fps on an iPhone is not tested yet.
 - The unsigned IPA is built beside the source dumps. Device testing remains the user's next step; no device installation or signing is performed.
