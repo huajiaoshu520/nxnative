@@ -170,6 +170,13 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Found on:** [Super Mario Galaxy 2](../../dm/games/0100FD8022DAA000/README.md) (Vulkan).
 - **Note:** a Mac window measures nothing here unless it is on screen: macOS fires an occluded window's display link about once a second (`display link recovered: stalled 1017 ms`).
 
+### A game window another process starts opens behind other windows
+
+- **Symptom:** a `regress.py` run of an NVN game stays at 20 fps from the start (`frame N not reached`, a NEW-FAIL) in some runs only: `frame step: hold 1 → 2` and `2 → 3 vsyncs` in the first 15 presents, then `display link recovered: stalled 1017 ms` about once a second to the end, and no trial back to a shorter hold.
+- **Cause:** the host is started by another process, so macOS does not activate it (`oe focus state → 2` in every run), and its window opens wherever it lands in the window order. Behind another window it is covered, and macOS fires a covered window's display link about once a second. The late frames of the boot step the hold up, which happens in every run, and the stall each second makes a frame late again before the 30 frames in a row that a trial needs. A run whose window happened to be on screen came back to 1 vsync with a probe.
+- **Fix:** `DM_WINDOW_TOP=1` orders the window in front without activation and keeps it above other apps' windows (`front_mac.m`). `regress.py` sets it for its runs and captures. The host logs every change of the window's visibility (`front end: window covered`, `window visible`), and `regress.py` runs a route once more when its window was covered (`, window covered` in the report when the second run was covered too). A revision before this change ignores the setting, so its runs can still be covered.
+- **Found on:** [Breath of the Wild](../../dm/games/01007EF00011E000/README.md) (2026-10-28 and 29: every one of its 20 fps runs had 21 to 115 stalls, the runs at 60 fps 0 to 7).
+
 ### Virtual 60 Hz ticks on screens that are not a multiple of 60
 
 - **Symptom:** asked for 60 Hz, the system fires the display link on every third refresh of a 165 Hz screen, 55 Hz, so games paced by it ran at 55 fps (27.5 at 30).

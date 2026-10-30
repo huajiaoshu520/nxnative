@@ -144,6 +144,13 @@ The game may also write into an NVN object directly, without an NVN call, throug
 - **Fix:** each capture step runs under the standard policy, and the thread gets its own policy back after it (`cap_policy_standard`, `cap_policy_restore` in `nvn_capture.inc`). Scarlet's frame 3000 now takes 53 s to capture (1,178 s before), Breath of the Wild's frame 5000 34 s (124 s). The log gives each step's time (`submit N: registries and their textures …, records …, pool bytes …`). `regress.py capture` bounds the step by `--capture-limit` instead of the hang time. The pool bytes are also copied last in the step, as the live replay of the submit reads them, and once.
 - **Found on:** [Pokemon Scarlet](../../dm/games/0100A3D008C5C000/README.md) and [Breath of the Wild](../../dm/games/01007EF00011E000/README.md) (their regression route captures).
 
+### A capture refused after a change to the reflection structs
+
+- **Symptom:** `nvn_replay` stops with `program #N (a key …) stage S: the translated shader's bindings or inputs differ from the ones the records were captured against`, and `regress.py replay` reports every game's capture as one the candidate cannot replay, while the shaders' reflection (`<key>_b.json`) is the same in both chains apart from the chain field.
+- **Cause:** the capture compares each program's interface with the replayer's through a hash (`cap_iface`), and that hash was of the reflection structs' bytes (`nvn_rbind`, the vertex inputs). 682fdd26 widened `nvn_rbind.n` to 16 bits and added `soff`, so every shader's hash changed although no binding had.
+- **Fix:** the hash is of the values, field by field, and a field at 0 adds nothing, so a field widened or added later keeps the hash of every shader that does not use it; `t_capture_live` pins the hash of one reflection. A capture records its hash kind (header `iface 2`), and `nvn_replay` refuses one of another kind with `capture again`: the captures made before have to be recorded again once.
+- **Found on:** the regression captures of [Breath of the Wild](../../dm/games/01007EF00011E000/README.md), [Pokemon Scarlet](../../dm/games/0100A3D008C5C000/README.md), [Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md) and [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md) (2026-10-30, all four refused at f5aee5aa).
+
 ## Command memory
 
 ### Host-lent command memory segments

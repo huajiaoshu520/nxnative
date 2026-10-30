@@ -481,6 +481,7 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** general: `dmsh_build.py` (`early_fragment_tests`) sets `early_fragment_tests` in the translation job of every pixel shader whose control byte +0x718 is set. `dmsh_xlate` passes it to Ryujinx as `earlyZForce`, and the MSL entry point is declared `[[ early_fragment_tests ]]`. A shader whose SPH writes depth (word 19 bit 1) is left as it is, since a test made early would not use the depth it computes.
 - **Found on:** [Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md#found-on-this-game): 1,677 of its pixel shaders set the flag, and none of them writes depth. Rebuilding the chain changed exactly those 1,677 shaders' MSL, by the attribute alone. Elsewhere the attribute alone changed 699 of Wonder's 16,268 shaders and 51 of Scarlet's 30,142. Breath of the Wild and ANIMAL WELL set the flag in no shader.
 - **Check:** `dm/gfx/tests/test_early_fragment_tests.py`.
+- **Open:** with the attribute, a fragment shader that writes memory gives a picture that varies from run to run on Apple's GPU: [Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md#open)'s `8f470f5ce5864df7`, a per-fragment visibility flag (2026-10-30; the frame's replays: one digest without the attribute, 3 to 7 in 8 with it).
 
 ### Dead-code removal dropped the inputs of atomics
 
@@ -899,7 +900,7 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 - **Symptom:** `[RED] shader … reflection conversion failed: 66 bindings, over the limit 64`, then `failed to load`, and the draws with it are dropped (a black map).
 - **Cause:** the reflection is converted into fixed arrays of `NVN_REFL_MAXB` bindings (`nvn_refl.h`), which was 64. NVN gives a stage 32 textures and 32 samplers beside its uniform and storage buffers and images, so a shader can have more.
-- **Fix:** `NVN_REFL_MAXB` is 96; the argument buffer entries keep their own limit (`NVN_REFL_MAXARG`, 192).
+- **Fix:** `NVN_REFL_MAXB` is 128; the argument buffer entries keep their own limit (`NVN_REFL_MAXARG`, 768, see [Arrays of c2 handles cover the whole table](#arrays-of-c2-handles-cover-the-whole-table-with-a-separate-sampler-word)). It was raised from 96 when every sampled sampler got a twin binding ([Border colours Metal has no sampler state for](rendering.md#border-colours-metal-has-no-sampler-state-for)): that shader then has 97 bindings.
 - **Found on:** [OCTOPATH TRAVELER II](../../dm/games/0100A3501946E000/README.md): the 3D world map of the traveler selection (`UiMM_WorldMap3D`, pixel shader `f7c8373b7323687d`: 30 textures, 30 samplers, 3 uniform buffers and the c1 / support / driver segments).
 
 ### Argument buffer members with attributes after their id

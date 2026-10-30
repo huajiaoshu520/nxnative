@@ -21,9 +21,16 @@ supplied version. The supplied 4.0.0 update is damaged and remains unsupported
   12 GB request; the abort's backtrace ends at `sdk+0x324b7c`,
   `main+0x12ded4c`. This is the same compact-address-space limit as
   [Legends: Z-A](../0100F43008C44000/README.md#memory).
-  The build-gated [cut](patches.py) at `main+0x12df074` reduces the virtual
-  reservation to 4 GB. This is a platform workaround; physical commits remain
-  bounded by the application pool.
+  A build-gated cut at `main+0x12df074` first reduced the virtual reservation
+  to 4 GB. **Current: the host's StandardAllocator cap, no `patches.py`**
+  ([StandardAllocators over 12 to 62 GB](../../../docs/reference/memory.md#standardallocators-over-12-to-62-gb-of-address-space)):
+  the gate gives the 12 GB request 4.06 GB at alias +0.06 GB. Checked
+  2026-10-30 on 1.0.0 without the cut, headless from a fresh save with the
+  route below for 480 s, to frame 9,900 in the opening (the get-up prompt comes
+  at about 10,000; screenshots of the Paldea narration and the flyover): the alias region was
+  used up to +4.12 GB of 4.38 GB, no region failed, and the only `[RED]` line
+  was the conservative-raster diagnostic. Physical commits remain bounded by
+  the application pool.
 - **Resolved: the 4 GB request still failed with 1 GB placement alignment.**
   The existing 62 MB node-area cuts apply because SDK build `3644a676…` is
   nirvanA Initiative's. Its allocation helper (`sdk+0x37c2d0`) rounds regions
@@ -85,9 +92,9 @@ existing [per-depth-mode entry-point mechanism](../../../docs/reference/shaders.
 - [`smoke.tsv`](smoke.tsv) uses an isolated, fixed copy of the save just after
   getting up at `<NSP folder>/0100A3D008C5C000-work/smoke-save`. Make that
   copy before running the regression harness; the save stays outside the repo.
-  `regress.py capture` records its frame 3000 for `regress.py replay`: 4 of 8
-  replays equal the live frame, noise 20 pixels (2026-10-29, chain
-  `6ad4d951e3c8`; 7 of 8 and 18 pixels in an earlier capture). The capture
+  `regress.py capture` records its frame 3000 for `regress.py replay`: 1 of 8
+  replays equals the live frame, noise 7 pixels (2026-10-30, chain
+  `f3ceca86cac5`; 4 of 8 and 20 pixels, 7 of 8 and 18 in earlier captures). The capture
   takes 53 s ([a frame capture runs under the standard thread
   policy](../../../docs/reference/nvn-objects.md#a-frame-capture-runs-under-the-standard-thread-policy),
   resolved; 1,178 s before). The first
@@ -235,5 +242,6 @@ existing [per-depth-mode entry-point mechanism](../../../docs/reference/shaders.
 - [A replay's own objects take serials above a capture's](../../../docs/reference/nvn-objects.md#a-replays-own-objects-take-serials-above-a-captures).
 - [A captured texture ID whose memory pool was finalized](../../../docs/reference/nvn-objects.md#a-captured-texture-id-whose-memory-pool-was-finalized).
 - [A frame capture runs under the standard thread policy](../../../docs/reference/nvn-objects.md#a-frame-capture-runs-under-the-standard-thread-policy).
+- [A capture refused after a change to the reflection structs](../../../docs/reference/nvn-objects.md#a-capture-refused-after-a-change-to-the-reflection-structs).
 - [Conservative rasterization remains unimplemented](../../../docs/reference/rendering.md#conservative-rasterization-remains-unimplemented).
 - [Metal's build folders left by pipeline archive flushes](../../../docs/reference/shaders.md#metals-build-folders-left-by-pipeline-archive-flushes).
