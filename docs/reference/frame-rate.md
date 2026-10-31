@@ -20,6 +20,14 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Check:** probes confirmed the legacy result: the framework presents at interval 1, VFR reports interval 1 with ratio 0.5, and when a frame runs long the game steps back to 2 with ratio 1, so the game speed does not change.
 - **Note:** the zeldaret/botw decompilation (`VFR.cpp`) gave the semantics; 1.9.0's addresses were found by the constants (`60 / interval`, the `fmov s11, #2.0` floor).
 
+### Benchmark captures perturb the measured frame pacing
+
+- **Symptom:** otherwise stationary gameplay benchmarks show roughly 125–135 ms frame spikes at their verification screenshots; adaptive-cap results vary between runs.
+- **Cause:** `scripts/bench.py` requested readback/PNG captures one-quarter and three-quarters through the timing window. The game frame stalls while the image is captured, and the adaptive frame-step controller can react to that stall. It is not evidence of equivalent renderer or pipeline-compilation work.
+- **Fix:** request the default verification screenshot half a second after the measurement window, within the existing two-second exit tail. `--shots` remains an explicit diagnostic override; in-window captures are not uncontaminated performance evidence. Game-speed reports also parse the host's current `frame step: game time …` log format.
+- **Check:** pre-refresh Mac BOTW 1.9.0 outdoor and TOTK 1.4.3 opening-cave logs put screenshot completion beside 125–135 ms frames, with shorter submit/GPU spans and no new pipelines. Subsequent runs used post-window screenshots; a TOTK launcher smoke report recovered `game_speed: 1.0` with the corrected parser. Those runs used shader chain `fda42ce035db`, not this branch's `b3ca4b7c621f`; no fresh runtime check on this branch is claimed. The six existing benchmark behavior tests are retained, not newly executed here.
+- **Found on:** [BOTW](../../dm/games/01007EF00011E000/README.md#gpu-work) and [TOTK](../../dm/games/0100F2C0115B6000/README.md#frame-rate) on Mac routes.
+
 ### A thermally serious iPhone holds 30 fps
 
 - **Symptom:** on an iPhone, a game with the frame step at 60 fps drops a frame in most windows after a few minutes, and its GPU time per frame roughly doubles to triples (17-26 ms for the same scenes).
@@ -209,6 +217,15 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Found on:** PR #79: the PR's author ran [Hades](../../dm/games/0100535012974000/README.md) at 144 Hz (switched in a window then): the HUD's frame interval line steady at 16.7 ms, where it jumped before.
 - **Check:** here (a built-in 120 Hz screen, a multiple of every link rate) a harness drove `front_mac.m` asked for 50 fps: no switch in the window, 120 → 50 Hz in fullscreen, 120 Hz again on leaving it, and 120 Hz after quitting in fullscreen; at 60 fps and with `DM_SCREEN_MATCH=0` nothing switched.
 - **Not checked:** the link's new range after a switch has not run here (Hades windowed and fullscreen paced at 60 as before).
+
+### A game opened from a fullscreen app stays a window
+
+- **Symptom:** a Mac game started with `DM_FULLSCREEN=1` from an app that is itself in fullscreen (the launcher's console mode) came up as a window.
+- **Cause:** the launcher lives in its own fullscreen Space, so opening the game makes macOS leave that Space. `front_run` asked for fullscreen on the next run-loop turn. A two-app harness showed the app active but its window not yet on the active Space (`isOnActiveSpace` 0), with the Space change arriving 0.3 to 0.5 s later. AppKit can refuse fullscreen during another animation or user gesture, reporting it only to the window delegate (`windowDidFailToEnterFullScreen:`, there is no notification). The original harness accepted the early request, but the reporter later reproduced the startup rollback on four of four Hades II launches from NX2Apple's console mode.
+- **Fix:** `front_mac.m` `front_run` waits until the app is active and the window is on the active Space (`NSApplicationDidBecomeActiveNotification`, `NSWorkspaceActiveSpaceDidChangeNotification`, whichever comes last), and repeats a refused startup request once. The failure handler acts only on an outstanding startup attempt; successful entry or a player transition while the request is waiting retires it, so a later manual refusal cannot restart startup. `g_fullscreen` and `screen_match_apply` are unchanged.
+- **Found on:** [PR #665](https://github.com/seedds/nxnative/pull/665), the NX2Apple launcher's console mode (LNPANDY/NX2Apple), tested by its reporter with [Hades II](../../dm/games/0100A00019DE0000/README.md).
+- **Check:** the reporter confirmed that the deferred request entered fullscreen on its first attempt and stayed there, without a refusal. A harness of the startup callbacks checks both readiness orders, bounded refusal recovery, and cancellation before startup or a queued retry, plus later manual failures after successful startup.
+- **Not checked:** the revised lifecycle handling in a real game through the launcher's console mode; native refusal recovery (the reporter's deferred request succeeded without it).
 
 ### Frame latency 2 for the display link in fullscreen
 
