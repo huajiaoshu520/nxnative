@@ -9,7 +9,7 @@
 
 static _Atomic uint32_t mutex_word, condition_key;
 static uint32_t me_handle;
-static uint64_t backoffs(void) { thr_t *me = pthread_getspecific(g_keythr); return me->nbackoff; }
+static uint64_t backoffs(void) { thr_t *me = pthread_getspecific(g_keythr); assert(me); return me->nbackoff; }
 static void spin_ns(uint64_t ns) { uint64_t t = now_ns(); while (now_ns() - t < ns) {} }
 // One condition variable wait as the SDK's TimedWait makes it: take the lock in user mode, wait (the timeout releases it without taking it back)
 static int64_t cv_wait(int64_t ns) {
