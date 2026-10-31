@@ -79,6 +79,14 @@ To enroll a cut for any game's own module:
 - **Fix:** in its last pass (`far_base`), `jump_offsets` accepts `cmp xI, #N` on the index too. The earlier passes are unchanged, so modules that rewrote before come out the same.
 - **Found on:** [OCTOPATH TRAVELER](../../dm/games/010057D006492000/README.md) `main+0x1676f58` (1.0.5), the only such site in that `main`.
 
+### Index zero-extended after a 32-bit bounds check
+
+- **Symptom:** `jump table <addr>` assertion in `patch_nso.py` where the index is made with a 64-bit `and` by `0xffffffff` after the check (`cmp w8, #4; b.hi; and x18, x8, #0xffffffff; ldrsw x18, [x16, x18, lsl #2]; add x18, x18, x16; br x18`).
+- **Cause:** `jump_offsets` took the `and` as a mask and looked for the same mask on the checked register, which has none, so no form matched.
+- **Fix:** a 64-bit `and` with `0xffffffff` zero-extends the source's low 32 bits. `jump_zero_extended` recognizes a 32-bit `cmp` of that source followed by `b.hi` out of the dispatch. The source stays unchanged up to the mask, the index up to the load, the loaded entry and base up to the add, and `x18` up to the branch. Calls, system calls, traps, other intervening control flow, undecodable gaps, and known entries past the check are rejected; the table must fit in the image and every target must be a decoded instruction outside the guarded run (or its check).
+- **Check:** this is a separate fallback after every earlier recognizer fails. Adding the rule inside `jump_offsets` before its existing searches could change a previously recognized table's extent by selecting a nearer compare. The fallback preserves those earlier results; synthetic full-rewriter tests cover both the new five-entry form and an existing eight-entry match with a nearer five-entry check.
+- **Found on:** Mario Tennis Aces (0100BDE00862A000) `main+0x35837c` (1.0.0), a five-entry table whose targets all lie in the function ([PR #778](https://github.com/seedds/nxnative/pull/778)). The contributor reported that `main`, `subsdk0` and `sdk` rewrite with zero-extension recognition; gameplay validation remains open.
+
 ### Index masked in the block that branches to the dispatch
 
 - **Symptom:** `jump table <addr>` assertion in a Unity / IL2CPP `main` whose dispatch checks a fresh mask of another register than the one it indexes with.

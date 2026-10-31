@@ -69,6 +69,15 @@
 - **Fix:** `unzs` feeds the command the bytes it read (`input=`). No other tool hands an external command a path inside the image. Test: `test_romfs_read.py` `test_zstd_file_inside_an_image`.
 - **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md#shaders): every file of its RomFS is zstd-compressed, 13,744 left out in both versions; the first image-backed build after the folder extraction.
 
+## Add-on content
+
+### DLC in Documents is ignored or removed DLC remains installed
+
+- **Symptom:** a game's DLC works only when packed inside its IPA, although its base RomFS can be deployed separately. After pushing a smaller DLC set, removed indices can remain reported as owned and mounted.
+- **Cause:** the iOS launcher originally checked only `<App>/aoc`. Merely adding `Documents/aoc` discovery is insufficient: `devicectl device copy to` merges directories by default, retaining removed indices, and skipping a build with no DLC leaves the entire previous set behind. The host counts and mounts the numeric entries under `DM_AOC_DIR`, so those leftovers remain active.
+- **Fix:** `aoc_locate` in `dm/ios/Sources/main.m` preserves an explicit `DM_AOC_DIR` from the launch environment or `env.txt`; otherwise it selects the first directory at `Documents/aoc`, then `<App>/aoc`, and logs `boot: DLC from <path>`. `Documents/aoc` is excluded from backups. Given `resources.env`, `scripts/push_romfs.sh` transfers the complete `DM_RESOURCE_AOC` directory with `--remove-existing-content true`, replacing old `<index>.img` files and legacy `<index>/` trees. An empty or omitted value sends an empty directory, clearing previous content and explicitly selecting no external DLC rather than falling back to bundled content. A nonempty path that is unavailable stops before any transfer. A direct RomFS-image push has no DLC metadata and leaves DLC unchanged. Transfers are not atomic: rerun a failed push before launching the game. Usage: [Quick reinstalls](../development.md#quick-reinstalls).
+- **Found on:** synthetic startup and transfer fixtures while reviewing [PR #486](https://github.com/seedds/nxnative/pull/486), part of [issue #388](https://github.com/seedds/nxnative/issues/388). The Foundation fixture runs the actual iOS locator; the push-helper fixture models devicectl's documented merge and replacement behavior, including smaller and empty DLC sets and transfer failure. Applies to every game; no device gameplay validation was performed.
+
 ## Launcher metadata
 
 ### A Mac front end's default settings change Metal execution paths
