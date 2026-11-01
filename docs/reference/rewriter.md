@@ -135,6 +135,15 @@ To enroll a cut for any game's own module:
 - **Fix:** `jump_adr_offsets`, tried only where the table-relative form is not found. The bounds check can be on a register copied into the index (`mov w16, w15`), and the table base can be built far from the dispatch; then every `adrp` + `add` pair in the function that builds that register is tried, and a table is accepted only if exactly one makes every target an instruction of the function.
 - **Found on:** [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md) `main+0x393bb0` and others.
 
+### ADR-relative jump tables with 64-bit bounds
+
+- **Symptom:** `AssertionError: jump table 30ee50c` while rewriting an ADR-relative dispatch with `cmp x9,#4`.
+- **Cause:** `jump_adr_offsets` recognized only 32-bit bounds comparisons, although a comparison of the full 64-bit index also bounds the table. Its backward copy tracking could also retain a destination whose old value had been overwritten.
+- **Fix:** accept either comparison width for the tracked index. When following a 32-bit index copy backward, replace the destination with its source, so an earlier check of the overwritten destination cannot justify the load. Other writes still invalidate the match; table and target validation are unchanged.
+- **Found on:** [DRAGON QUEST I & II HD-2D Remake](../../dm/games/0100D7C01F254000/README.md), `main+0x30ee50c` (five targets).
+- **Check:** `dm/tools/tests/test_jump_copies.py` exercises both comparison widths, unrelated checks, overwritten indices and a bounds check on the copied source with real AArch64 instructions.
+- **Open:** as in the existing 32-bit form, this recognizer assumes the comparison has an effective unsigned bounds guard; it does not prove guard/flag validity or that every incoming path passes the check. This game's actual dispatch has `b.hi` with unchanged flags. Validating those branches remains separate from this fix.
+
 ### Byte tables indexed by x30 (capstone register names)
 
 - **Symptom:** `jump table <addr>` assertion on a byte table indexed by x30 (`adr x18, #L; ldrb w30, [x14, x12]; add x18, x18, x30, lsl #2; br x18`).

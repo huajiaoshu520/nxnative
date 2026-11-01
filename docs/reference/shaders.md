@@ -1025,6 +1025,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Found on:** [The Legend of Zelda: Echoes of Wisdom](../../dm/games/01008CF01BAAC000/README.md#rendering-and-shaders), update 1.1.0: a 308.4 ms frame, 283.5 ms of it pipeline acquisition and 5.9 ms GPU work; with the tables the offline prebuild built all 7,495 bases. [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md#pipelines-on-a-cold-start): frames of 100–546 ms before, none of its bases compiled on the first start after.
 - **Check:** `test_nsp_mac_app`: `App.test_pipeline_pair_tables`, `App.test_split_pso_pairs` and `App.test_layout` fail without the tables in the packer; `Script.test_pack_command` checks the split's copy is passed only when the profile has no `pso_pairs.tsv`.
 
+### Offline pipeline archive missing for the device GPU
+
+- **Symptom:** `pipeline archive bundled with the app: none for this GPU (...)`: the device builds the bases itself although the app carries an offline archive.
+- **Cause:** each archive targets one GPU architecture. The iOS packers defaulted to `g18p` for profiles with `pso_mtl4 on`; another GPU family needed an explicit build override.
+- **Fix:** both packers also read the optional profile key `pso_gpu` behind the existing `pso_mtl4 on` gate. It names the families to build for; explicit build overrides still win. Without the new key, opted-in profiles retain `g18p`; profiles with Metal 4 off retain no archive. See [archive target selection](../development.md#the-pipeline-archive-made-offline).
+- **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md#offline-pipeline-archive-probe). Its note records the contributor's Mac build probe and the outstanding device checks.
+- **Check:** `dm/tools/tests/test_game_profile.py` validates the key; `dm/tools/tests/test_pso_offline.py` exercises both packers' selection and override precedence with synthetic profiles.
+
 ### Offline pipeline archive reuse and fallback
 
 - **Symptom:** a truncated `.mtl4a` reaches `MTL4ArchiveImpl::loadFromURL`; the bundle reports coverage with `0 of 0 probed bases found`; rebuilt shader libraries reuse an archive of their old binaries; or packing fails with `pso_offline: no base to build` when every eligible pair has function constants, or when the profile's `shader_pairs.tsv` holds only its header (`--platform mac-app`, [GitHub issue #338](https://github.com/seedds/nxnative/issues/338)).
@@ -1080,6 +1088,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Cause:** `dmsh_build.py`'s shader cache was keyed without the pairs.
 - **Fix:** the per-shader key covers the pairs, and a paired vertex shader's key also covers its pixel shaders' keys (`shader_key`, `pair_keyed`), so a change to a profile's pairs rebuilds what it affects ([Pixel shader inputs the vertex shader does not write](#pixel-shader-inputs-the-vertex-shader-does-not-write)).
 - **Found on:** [13 Sentinels: Aegis Rim](../../dm/games/01003FC01670C000/README.md).
+
+### Partial vertex builds missing paired pixel sources
+
+- **Symptom:** a full build reports successful shaders, but `metal-tt` rejects its pipeline archive with fragment inputs not written by the vertex shader. Fifteen cached vertices lacked default outputs in DRAGON QUEST I & II.
+- **Cause:** a partial build requested only its vertex keys. `vs_pad` skipped absent paired pixel MSL, then cached the incomplete vertex under a key that already included those pixel shaders' input digests. A later full build restored it before pixel-first finishing and never padded that cache hit again.
+- **Fix:** include available paired pixel shaders in partial build keys and output cleanup, then finish pixels before vertices. Do not publish a paired vertex cache entry while any paired pixel MSL is missing. The code fingerprint excludes the old incomplete cache entries; the Metal source cache still reuses unchanged complete libraries.
+- **Found on:** [DRAGON QUEST I & II HD-2D Remake](../../dm/games/0100D7C01F254000/README.md#found-on-this-game), while building its Mac pipeline archive.
+- **Check:** `test_shader_toolchain_cache.py` requests a vertex alone, exercises dependency cleanup and pixel-first finishing, and checks that padding survives publication and a later full-cache restore. A missing pixel source prevents publication.
 
 ### Target selection keeps the shader analysis files in the cache
 
