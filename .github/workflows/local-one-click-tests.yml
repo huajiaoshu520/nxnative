@@ -14,6 +14,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+      - name: Test XCI ticket isolation without game files
+        run: |
+          dotnet build dm/local_one_click/xci_catalog -c Release -o "$RUNNER_TEMP/xci-catalog" --nologo
+          dotnet "$RUNNER_TEMP/xci-catalog/xci_catalog.dll" --self-test
       - name: Test profile discovery, packaging checks and protected merges
         run: |
           python3 -m unittest discover -s dm/local_one_click/tests -v

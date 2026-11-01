@@ -166,3 +166,22 @@ that specific tool in System Settings > Privacy & Security > Open Anyway, comple
 the system confirmation, then press Return in Terminal to retry. Enter `q` to stop.
 The launcher does not remove quarantine attributes or change Gatekeeper settings.
 A failed preflight stops the build before game extraction or shader compilation.
+
+### DLC in one-click builds
+
+Put the game's DLC NSP/NSZ packages beside its base/update packages or integrated
+XCI, or inside subfolders such as `DLC/` and `DLC/expansion/`. Subfolders are
+searched recursively; hidden folders, generated `*_build`/`*_survey` caches and
+directory symlinks are skipped. Same-named packages in different folders stay
+distinct, and adding or removing DLC changes the prepared-input cache. The launcher lists the detected DLC title IDs and package versions before
+building. Ticketless DLC without title-ID filename tags uses the official metadata
+reader and your selected keys; unreadable metadata stops the build rather than
+silently omitting the package.
+
+Integrated XCI exports keep each title's own tickets, so the official scanner can
+distinguish the base, updates and DLC. AppleDouble sidecars are ignored. The
+source XCI and DLC files remain untouched. The official pipeline selects DLC
+versions, extracts their AOC images and embeds them in the IPA or standalone Mac
+app. No separate DLC folder or data pack is required for these one-click outputs.
+DLC availability inside a game still depends on the game's own requirements and
+the upstream runtime.

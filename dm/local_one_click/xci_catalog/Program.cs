@@ -22,6 +22,26 @@ record Title(string TitleId, uint Version, string Type, string Meta, string[] Fi
 static class P {
     static IFileSystem fs;
     static Dictionary<string,Entry> entries;
+    static Dictionary<string,ulong> ticketOwners = new(StringComparer.OrdinalIgnoreCase);
+    static ulong TicketOwner(byte[] ticket) {
+        if(ticket.Length<0x2b0 || ticket[0x281]!=0) throw new Exception("Unsupported personalized or truncated ticket");
+        return Convert.ToUInt64(Convert.ToHexString(ticket.AsSpan(0x2a0,8)),16);
+    }
+    static string[] TicketFiles(ulong id) => ticketOwners.Where(t=>t.Value==id).Select(t=>t.Key).ToArray();
+    static void TicketSelfTest() {
+        ulong app=0x01006F8002326000UL;
+        ticketOwners.Clear();
+        foreach(ulong id in new[]{app,app|0x800UL,app+0x1001UL,app+0x1002UL}) {
+            byte[] ticket=new byte[0x2b0];
+            Convert.FromHexString(id.ToString("X16")).CopyTo(ticket,0x2a0);
+            ticketOwners[id.ToString("x16")+"0000000000000001.tik"]=TicketOwner(ticket);
+        }
+        foreach(ulong id in ticketOwners.Values.ToArray())
+            if(TicketFiles(id).Length!=1 || !TicketFiles(id)[0].StartsWith(id.ToString("x16")))
+                throw new Exception("Export would attach another title's ticket");
+        if(TicketFiles(app+0x1003UL).Length!=0) throw new Exception("Unexpected ticket for title");
+        Console.WriteLine("Ticket isolation passed for base, patch, two DLCs and ticketless content.");
+    }
     static byte[] Read(string name) {
         var entry=entries[name];
         if(entry.Size>16*1024*1024) throw new Exception("Unexpected large metadata/ticket");
@@ -40,6 +60,7 @@ static class P {
         catch(Exception e) { Console.Error.WriteLine("XCI metadata/export failed: "+e.Message);return 1; }
     }
     static void Run(string[] args) {
+        if(args.Length==1 && args[0]=="--self-test") { TicketSelfTest(); return; }
         if(args.Length!=2 && args.Length!=3) throw new Exception("usage: xci_catalog <prod.keys> <input.xci> [output folder]");
         var keys=ExternalKeyReader.ReadKeyFile(args[0]);
         var storage=new LocalStorage(args[1],FileAccess.Read);
@@ -50,7 +71,7 @@ static class P {
             .ToDictionary(e=>e.Name,e=>new Entry(e.Name,e.Size),StringComparer.OrdinalIgnoreCase);
         foreach(var entry in entries.Values.Where(e=>e.Name.EndsWith(".tik",StringComparison.OrdinalIgnoreCase))) {
             var t=Read(entry.Name);
-            if(t.Length<0x2b0 || t[0x281]!=0) throw new Exception("Unsupported personalized or truncated ticket");
+            ticketOwners[entry.Name]=TicketOwner(t);
             keys.ExternalKeySet.Add(new RightsId(t.AsSpan(0x2a0,0x10)),new AccessKey(t.AsSpan(0x180,0x10))).ThrowIfFailure();
         }
         var titles=new List<Title>();
@@ -77,7 +98,10 @@ static class P {
                     if((ulong)content.Size!=size) throw new Exception("Content size mismatch: "+name);
                     files.Add(content.Name);
                 }
-                files.AddRange(entries.Keys.Where(n=>n.EndsWith(".tik",StringComparison.OrdinalIgnoreCase)||n.EndsWith(".cert",StringComparison.OrdinalIgnoreCase)));
+                // The official scanner reads the first ticket as the title ID.
+                // Attaching all tickets to every export misclassifies DLC/updates.
+                files.AddRange(TicketFiles(id));
+                files.AddRange(entries.Keys.Where(n=>n.EndsWith(".cert",StringComparison.OrdinalIgnoreCase)));
                 titles.Add(new Title(id.ToString("X16"),version,kind,entry.Name,files.Distinct(StringComparer.OrdinalIgnoreCase).ToArray()));
             }
         }

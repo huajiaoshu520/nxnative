@@ -27,7 +27,7 @@ class ContainerTests(unittest.TestCase):
                 prepared=containers.normalize(root,root/'prod.keys')
                 self.assertTrue((prepared/'[0100ECD018EBE000][v0].nsp').exists())
                 self.assertTrue((prepared/'[0100ECD018EBE800][v65536].nsp').exists())
-                self.assertEqual((prepared/'dlc.nsp').resolve(),extra.resolve())
+                self.assertEqual((prepared/containers.flat_name(extra,root)).resolve(),extra.resolve())
                 self.assertEqual(containers.normalize(root,root/'prod.keys'),prepared)
                 self.assertEqual(sum(1 for c in run.call_args_list if len(c.args)==4),1)
                 self.assertEqual(source.read_bytes(),b'fixture')

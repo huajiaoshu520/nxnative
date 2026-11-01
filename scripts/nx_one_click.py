@@ -42,9 +42,19 @@ def pipeline():
     return module
 
 
-def select_inputs(game_dir, package=None):
+def select_inputs(game_dir, package=None, keys=None):
     official = pipeline()
-    tid, family = official.scan_nsps(game_dir)
+    if keys is None:
+        tid, family = official.scan_nsps(game_dir)
+    else:
+        # Match the official CLI: ticketless/tagless DLC needs its meta NCA read.
+        with official.package_title_reader(ROOT, keys, clean_env()) as reader:
+            def identify(path):
+                title = reader(path)
+                if title is None:
+                    raise ValueError("Cannot identify game package (check prod.keys and package contents): " + path.name)
+                return title
+            tid, family = official.scan_nsps(game_dir, from_package=identify)
     entry = catalog().get(f'{tid:016X}')
     if not entry:
         raise ValueError('No shipped game profile for this title. See --list-games; the official CLI can survey unknown games.')
@@ -62,6 +72,9 @@ def select_inputs(game_dir, package=None):
     if missing:
         print('Note: shader-source versions absent: ' + ', '.join(missing) +
               '. The official pipeline will derive tables from the selected version.', flush=True)
+    print("DLC packages detected: " + str(len(family["dlc"])), flush=True)
+    for title, version, path in family["dlc"]:
+        print(f"  DLC {title:016X}, version {version if version is not None else 'auto'}: {path.name}", flush=True)
     return entry, chosen, family
 
 
@@ -152,7 +165,7 @@ def main(argv=None):
         if isinstance(prepared_dir, dict):
             print(json.dumps(prepared_dir, indent=2))
             return
-        entry, chosen, family = select_inputs(prepared_dir, a.package)
+        entry, chosen, family = select_inputs(prepared_dir, a.package, keys)
         if a.plan:
             print(json.dumps(dict(game=entry, package=chosen, game_dir=str(game_dir), output=str(output),
                                   language=a.language, platform=a.platform, dlc_packages=len(family['dlc'])), indent=2, ensure_ascii=False))

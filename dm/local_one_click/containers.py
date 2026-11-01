@@ -65,10 +65,62 @@ def run_tool(tool, keys, source, output=None):
     return titles
 
 
-def normalize(game_dir, keys, plan=False):
-    sources = sorted(p for p in game_dir.iterdir() if p.is_file() and p.suffix.lower() == '.xci')
-    if not sources:
+PACKAGE_SUFFIXES = ('.nsp', '.nsz', '.xci', '.xcz')
+
+
+def input_packages(game_dir):
+    """Discover user packages recursively, never generated caches or directory links."""
+    packages = []
+    for directory, dirs, files in os.walk(game_dir, followlinks=False):
+        dirs[:] = sorted(d for d in dirs if not d.startswith('.') and not d.endswith(('_build', '_survey'))
+                         and not (Path(directory) / d).is_symlink())
+        for name in sorted(files):
+            path = Path(directory) / name
+            if not name.startswith('._') and path.suffix.lower() in PACKAGE_SUFFIXES and path.is_file():
+                packages.append(path)
+    return sorted(packages)
+
+
+def flat_name(path, root):
+    # A compressed package and its decompressed sibling keep the same stem.
+    relative = path.relative_to(root)
+    prefix = hashlib.sha256(str(relative.with_suffix('')).encode()).hexdigest()[:16]
+    return prefix + '-' + path.stem + path.suffix.lower()
+
+
+def flatten_packages(game_dir, packages, plan):
+    if all(p.parent == game_dir and p.suffix == p.suffix.lower() for p in packages):
         return game_dir
+    work = game_dir / '.nxnative-one-click'
+    fingerprint = [(str(p.relative_to(game_dir)), p.stat().st_size, p.stat().st_mtime_ns) for p in packages]
+    key = hashlib.sha256(json.dumps([tool_digest(), fingerprint]).encode()).hexdigest()[:24]
+    target = work / 'container-inputs' / ('folders-' + key)
+    if target.is_dir():
+        if all((target / flat_name(p, game_dir)).is_symlink() and
+               (target / flat_name(p, game_dir)).resolve() == p.resolve() for p in packages):
+            return target
+        raise ValueError('Prepared subfolder links are incomplete: ' + str(target))
+    if plan:
+        return dict(packages=[str(p.relative_to(game_dir)) for p in packages],
+                    note='Recursive inputs will be linked into the official build folder during a normal run.')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    stage = target.with_name('.' + target.name + '-' + uuid.uuid4().hex)
+    stage.mkdir()
+    try:
+        for path in packages:
+            (stage / flat_name(path, game_dir)).symlink_to(path.resolve())
+        stage.rename(target)
+    except BaseException:
+        shutil.rmtree(stage)
+        raise
+    return target
+
+
+def normalize(game_dir, keys, plan=False):
+    packages = input_packages(game_dir)
+    sources = [p for p in packages if p.suffix.lower() == '.xci']
+    if not sources:
+        return flatten_packages(game_dir, packages, plan)
     if len(sources) != 1:
         raise ValueError('Keep one integrated XCI per game folder; external NSP updates and DLC may accompany it.')
     work = game_dir / '.nxnative-one-click'
@@ -91,7 +143,7 @@ def normalize(game_dir, keys, plan=False):
         source = sources[0]
         titles = run_tool(tool, keys, source)
         print('XCI contents: ' + ', '.join(t['Type'] + ' ' + t['TitleId'] + ' v' + str(t['Version']) for t in titles), flush=True)
-        extras = sorted(p for p in game_dir.iterdir() if p.is_file() and p.suffix.lower() in ('.nsp', '.nsz', '.xcz'))
+        extras = [p for p in packages if p != source]
         paths = [source, *extras]
         fingerprint = [(str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in paths]
         key = hashlib.sha256(json.dumps([tool_digest(), fingerprint]).encode()).hexdigest()[:24]
@@ -112,9 +164,10 @@ def normalize(game_dir, keys, plan=False):
             if exported != titles:
                 raise ValueError('XCI metadata changed during export.')
             for p in extras:
-                if (stage / p.name).exists():
-                    raise ValueError('Duplicate input file name: ' + p.name)
-                (stage / p.name).symlink_to(p.resolve())
+                name = flat_name(p, game_dir)
+                if (stage / name).exists():
+                    raise ValueError('Duplicate input file name: ' + name)
+                (stage / name).symlink_to(p.resolve())
             if fingerprint != [(str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in paths]:
                 raise ValueError('Game inputs changed during XCI preparation.')
             outputs = {p.name: p.stat().st_size for p in stage.iterdir() if p.is_file()}
