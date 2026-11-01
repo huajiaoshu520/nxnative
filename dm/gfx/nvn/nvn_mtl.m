@@ -6635,6 +6635,7 @@ static NvShader *warm_shader(NSString *key, int stage) {
 }
 static void warm_enqueue(WarmItem *item) {
     os_unfair_lock_lock(&g_warm_lock);
+    if (!g_warm_items) g_warm_items = [NSMutableArray array];   // here, not in warm_start: the prefetch finishes libraries before the first submission, and in runs with no prewarm list
     [g_warm_items addObject:item];
     atomic_store_explicit(&g_warm_ready, 1, memory_order_release);
     os_unfair_lock_unlock(&g_warm_lock);
@@ -6809,7 +6810,6 @@ static void warm_start(void) {
         if (!all.count) return;
         paths = all;
     }
-    if (!g_warm_items) g_warm_items = [NSMutableArray array];
     warm_load_begin();
     pso4_init();   // the pipeline archive opens before the prewarm builds from it
     g_warm_t0 = bp_now();
