@@ -187,6 +187,13 @@ A decoder hands out as many outputs as it has slots, and while every slot is tak
 - **Fix** (`hle_movie.c`, `md_rendered`): a slot written into the client's texture is kept until the client releases it, or, for a client that has never released a rendered slot itself (Super Mario Party Jamboree, Metroid Prime 4: Beyond), until its next `GetOutputBuffer`. A decoder learns which kind its client is at the client's first release of a rendered slot; the earlier slots are returned under the same lock that checks them.
 - **Found on:** TSUKIHIME -A piece of blue glass moon- (010057A01E4D4000, no profile here; [GitHub issue #700](https://github.com/seedds/nxnative/issues/700): its prologue, a 1080p H.264 movie, `type 1 output 3 mode 2`) and [Metroid Dread](../../dm/games/010093801237C000/README.md#movies), whose movies jumped the same way (15 times in 75 s on the Mac before, none after).
 
+### A BGRA8 client texture gets its movie with red and blue swapped
+
+- **Symptom:** `[RED] movie: client texture format 0x9a is not RGBA8 / RGBX8 (sRGB included), writing in RGBA byte order`; a native-texture movie plays in the wrong colours, warm lamps blue.
+- **Cause:** the SDK's consumer draws the decoded picture into the client's texture on the GPU, so it comes out right in any colour format. The host writes the bytes on the CPU, and wrote them in RGBA order whatever the texture's format was.
+- **Fix** (`hle_movie.c`, `md_out_tex`): for BGRX8, BGRA8 and their sRGB forms (NVN formats 0x99 to 0x9C), the picture goes through a per-decoder copy with red and blue swapped. The slot's own picture stays RGBA, as a slot can be read twice.
+- **Found on:** [TRIANGLE STRATEGY](../../dm/games/0100CC80140F8000/README.md) (the title screen's background movies; BGRA8).
+
 ## Demuxers and codecs
 
 ### `movie::Extractor` runs natively
