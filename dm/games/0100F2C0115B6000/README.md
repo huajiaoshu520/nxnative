@@ -72,6 +72,7 @@ Game-specific findings. The general host changes they led to are listed under [F
 
 ## Mac routes
 
+- **Layered-clear review, 2026-11-01 (#808): incomplete runtime validation.** All 28,669 shaders built without failures. The baseline cave route completed at 59.8 fps with no red diagnostics. The candidate stopped at frame 1,500 immediately after focus changed to 2 and notification 15 was consumed: its main thread waited in `h_oe_PopMsg`, with GPU fences submitted/completed both 1,502 and the present queue drained. This was a focus pause, not an outstanding GPU wait. The foreground-controlled repeat was stopped at the maintainer's request during pipeline preparation, so this game is not recorded as validated for the change.
 - The issue #70 save: `DM_KEYS="20:A*6/4,f2480:LUp~5"` (title, load, jump, steer into the pond).
 - The issue #147 short streaming route uses a fresh copy of the issue #70 save and its corrected SDK module: `DM_FPS_TARGET=30 DM_KEYS="20:A*6/4,f2480:LUp~9,f4000:LUp~20,f4700:LRight~5,f5000:LUp~20"`, run for at least 220 s. This is a fall/respawn stress route, ending at Game Over in both short comparison runs; it is not a long surviving traversal test. The movement timings are repeatable, but the upload burst varies with streaming and CPU/GPU timing, so the deterministic staging regression complements it.
 - The in-cave autosave (`run/save`): keys `f2500:A,f2800:A,f3100:A,f3600:A`, shot at frame 4500. `DM_DETCLOCK` cannot be used: the game stops at frame 1 waiting for guest time.
@@ -81,6 +82,7 @@ Game-specific findings. The general host changes they led to are listed under [F
 ## Found on this game
 
 - [Benchmark captures perturb the measured frame pacing](../../../docs/reference/frame-rate.md#benchmark-captures-perturb-the-measured-frame-pacing).
+- **Resolved: 1.4.2 at double speed** (packed from a derived profile; its main has none of 1.4.3's frame step stubs): [A derived profile drops the frame step its build lacks](../../../docs/reference/frame-rate.md#a-derived-profile-drops-the-frame-step-its-build-lacks). Measured by fredchu at 30 fps and real speed on 1.4.2; not run here. `DM_FPS_TARGET=60` no longer brings the double speed back on such a build: [A present cap applies only with a frame step or an engine limit the host writes](../../../docs/reference/frame-rate.md#a-present-cap-applies-only-with-a-frame-step-or-an-engine-limit-the-host-writes).
 
 General host changes first needed here; each applies to every game:
 

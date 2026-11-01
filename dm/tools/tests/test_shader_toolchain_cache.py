@@ -129,7 +129,7 @@ class ShaderCache(unittest.TestCase):
         self.assertFalse((Path(self.ns['out']) / 'key_b.metallib').exists())
 
     def selected_keys(self, want, locations, pairs):
-        functions = [n for n in self.tree.body if isinstance(n, ast.FunctionDef) and n.name == 'build_keys']
+        functions: list[ast.stmt] = [n for n in self.tree.body if isinstance(n, ast.FunctionDef) and n.name == 'build_keys']
         self.assertEqual(len(functions), 1, 'the partial build needs its paired-pixel dependency selection')
         exec(compile(ast.Module(body=functions, type_ignores=[]), str(TOOLS / 'dmsh_build.py'), 'exec'), self.ns)
         return self.ns['build_keys'](want, locations, pairs)

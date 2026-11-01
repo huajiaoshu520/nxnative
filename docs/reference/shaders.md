@@ -468,10 +468,18 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 ### Metal compiler of a newer Xcode
 
 - **Symptom:** after an Xcode update the build stops with `[RED] this Mac's Metal compiler is not the one the shaders were tested with (dm/gfx/tools/dmsh_chain.lock): metal_macosx Apple metal version 32023.922 …`; `xcodebuild -downloadComponent MetalToolchain`, as the message said, downloads the same untested compiler again.
-- **Cause:** since Xcode 26 the Metal toolchain is a system asset that each Xcode downloads in its own build and `xcrun` takes for the selected Xcode (`xcodebuild -showComponent MetalToolchain` names it), whatever the macOS version: macOS 27.2 with Xcode 27.1 selected gives the tested 32023.921, with Xcode 27.2 selected 32023.922. The message named the Xcode to install but not that it must be the selected one, and README linked the App Store, which offers only the newest Xcode.
+- **Cause:** since Xcode 26 the Metal toolchain is a system asset that each Xcode downloads in its own build and `xcrun` takes for the selected Xcode (`xcodebuild -showComponent MetalToolchain` names it), whatever the macOS version. When #717 was reported, macOS 27.2 with Xcode 27.1 selected gave the then-pinned 32023.921, with Xcode 27.2 selected 32023.922. The message named the Xcode to install but not that it must be the selected one, and README linked the App Store, which offers only the newest Xcode.
 - **Fix:** the stop message names the selected Xcode and its folder, and says to install the tested Xcode from Apple's download page (beside a newer one as `Xcode-<version>.app`), select it (`xcode-select -s` or `DEVELOPER_DIR`), then download its Metal toolchain; README says the same. The lock stays at the one tested compiler: another one needs a regression run before it is recorded, and the lock is part of the chain version. Whether two installed toolchain assets each follow their own Xcode is inferred from `-showComponent`, not yet tried with both installed (**open**).
 - **Found on:** no game: [GitHub issue #717](https://github.com/seedds/nxnative/issues/717), on macOS 27.2 with Xcode 27.2 (Metal Toolchain 27B47).
 - **Check:** `test_own_compilers.py` (the selection step before the download), `test_ci_toolchain.py` (the message's and README's Xcode are CI's).
+
+### Idle MSBuild workers block regression measurements
+
+- **Symptom:** `regress.py` waits for other jobs to end while the only reported jobs are sleeping `MSBuild.dll /nodemode:1 /nodeReuse:true` workers using 0% CPU.
+- **Cause:** the busy-machine check treated every `dotnet` process as an active build. Reusable MSBuild workers can remain asleep after their build exits, and later builds can recreate them after a build-server shutdown.
+- **Fix:** exclude only sleeping, zero-CPU MSBuild reuse workers whose parent has exited. Active workers, I/O-blocked workers, workers still attached to a parent, and build commands remain busy jobs.
+- **Check:** `test_regress.py` supplies the process census that blocked the measurement, with active, I/O-blocked and parented controls.
+- **Found on:** no game: Xcode 27.2 toolchain validation on an M4 Pro.
 
 ### SPIRV-Cross parse failures
 
