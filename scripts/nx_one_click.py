@@ -13,6 +13,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'dm/local_one_click'))
 
 
@@ -37,6 +38,8 @@ def catalog(root=ROOT):
 
 def pipeline():
     spec = importlib.util.spec_from_file_location('nx_official_pipeline', ROOT / 'scripts/build_ipa_from_nsp.py')
+    if spec is None or spec.loader is None:
+        raise ImportError('Cannot load the official build pipeline.')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -115,7 +118,7 @@ def publish_output(partial, target, mac=False):
         raise ValueError('Output already exists; not overwriting: ' + str(target))
     partial.rename(target)
     if not mac:
-        from cleanup import cleanup_output_index
+        from dm.local_one_click.cleanup import cleanup_output_index
         cleanup_output_index(partial, target)
 
 
@@ -152,15 +155,15 @@ def main(argv=None):
         raise ValueError('Select a game folder and your prod.keys file.')
     if game_dir == ROOT or ROOT in game_dir.parents or keys == ROOT or ROOT in keys.parents:
         raise ValueError('Keep game files and keys outside the source repository.')
-    from cleanup import build_lock
+    from dm.local_one_click.cleanup import build_lock
     with build_lock(game_dir):
         if not a.plan:
             # Re-exec with explicit choices: dependency setup never repeats the panels.
-            import dependencies
+            from dm.local_one_click import dependencies
             args = ['--game-dir', str(game_dir), '--keys', str(keys), '--output-dir', str(output),
                     '--language', a.language, '--platform', a.platform] + (['--package', a.package] if a.package else [])
             dependencies.ensure(game_dir, Path(__file__).resolve(), args, mac=a.platform == 'mac-app')
-        from containers import normalize
+        from dm.local_one_click.containers import normalize
         prepared_dir = normalize(game_dir, keys, plan=a.plan)
         if isinstance(prepared_dir, dict):
             print(json.dumps(prepared_dir, indent=2))
@@ -188,6 +191,8 @@ def main(argv=None):
         with (job / 'build.log').open('w') as log:
             with subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True, bufsize=1) as proc:
+                if proc.stdout is None:
+                    raise RuntimeError('Official build output stream is unavailable.')
                 for line in proc.stdout:
                     print(line, end='', flush=True)
                     log.write(line)
@@ -195,7 +200,7 @@ def main(argv=None):
                 if proc.wait():
                     raise ValueError('Official build failed. Log and caches retained: ' + str(job))
         publish_output(partial, target, mac)
-        from cleanup import cleanup_success
+        from dm.local_one_click.cleanup import cleanup_success
         cleanup_success(game_dir, prepared_dir, entry['id'], target, keys)
         print('\nDone: ' + str(target))
         if mac:
