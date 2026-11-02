@@ -192,6 +192,13 @@ The guest address space, heaps, pools, virtual address memory and the allocators
 - **Windows:** `DM_ALIAS_WINDOWS=<window MB>` (for example `DM_ALIAS_WINDOWS=512`) logs, every 30 s, the mapped memory of each window of that size in the alias region (`hle_svc.c`); it measured Octopath Traveler 0's allocator pools and Super Smash Bros. Ultimate's battle commits.
 - **Log:** the `[mem]` lines report the alias high-water mark (one line per 256 MB), the total actually mapped (page bitmap) and every heap growth.
 
+### An alias high-water mark near the top is not exhaustion
+
+- **Symptom:** the `[mem]` high-water mark climbs close to the end of the alias region while far less is mapped (SUPER ROBOT WARS Y: +4.27 GB of 4.38 GB with 1.82 GB of live regions), and it looks like the address space is about to run out.
+- **Cause:** none to fix: this is how `VammManager::AllocateAddressRegion` places regions. It walks its tree from the highest region down, takes the first hole that fits and places the region at that hole's low end (read on SDK 18.3.5, `sdk+0x13bfd0`; other implementations not read). So while the top has room, every new region lands just past the highest one and freed holes below stay idle, and the mark rises with address churn, not with use. Only when no hole fits does the function return its failure (`w0 = 2` at `sdk+0x13c11c`).
+- **Fix:** none. To judge the room left, read the live regions and their holes in the `DM_REGIONS` table, not the mark, or run with a smaller alias region (`DM_ALIAS_SIZE`): if the game goes on with the end of the table pinned at the top, the holes are serving it. A real exhaustion is what [Size-aligned regions exhaust the alias address space](#size-aligned-regions-exhaust-the-alias-address-space) and [Size-class alignment doubles Unity's regions](#size-class-alignment-doubles-unitys-regions) describe: a request no hole fits.
+- **Found on:** [SUPER ROBOT WARS Y](../../dm/games/010063301BD50000/README.md#memory): every one of 228 regions placed above the top skipped a hole that would have held it, and with the alias region cut to 3 GB the end stayed at +2.99 GB for about 10 minutes of battle demos with no failure.
+
 ## Engine allocators
 
 ### StandardAllocators over 12 to 62 GB of address space
@@ -318,6 +325,13 @@ The guest address space, heaps, pools, virtual address memory and the allocators
 - **Cause:** `nninitStartup` allocates and frees everything allocatable (pool − used, 3.15 GB, mapped at the top of the region) and the SDK keeps the freed pages mapped; later allocations map new pages at the bottom until a map fails, and only then does it unmap the cached block and retry. The host never refused a map, so the block stayed mapped beside the 0.4 GB the game used.
 - **Fix:** profile key `mem_map_limit` (`hle_svc.c`): a map past the pool fails with ResultLimitReached, and the used memory `GetInfo` reports counts the mapped pages, as on Horizon (without that, the startup probe itself, sized as total − used, was refused).
 - **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md) (2.0.2, SDK 19.3.11; one boot). Measured: one refused 4 MB map, the 3.15 GB unmap, the same map again.
+
+### Unmapped guest memory stays resident
+
+- **Symptom:** after a large `UnmapPhysicalMemory` or heap shrink, RAM does not come back. `phys_footprint` may still fall, so it hides this: the `guest` class in `DM_MEMSTAT` shows the real figure.
+- **Cause:** on Darwin `mprotect(PROT_NONE)` only removes the page table entries. The pages stay resident and dirty, out of `phys_footprint`, and `madvise(MADV_FREE)` on pages that are not writable does nothing, though it returns 0. Measured on 1 GiB on the Mac: 1,024 MiB still resident and dirty, footprint 1.2 MiB.
+- **Fix:** `guest_release` (`hle_svc.c`) puts a fresh inaccessible mapping over the range (`MAP_FIXED`), which empties it at once and gives zero pages. `UnmapPhysicalMemory` then clears the range's exposed bits, so mapping it again needs no `memset`. A memory pool's no-copy buffer over the range keeps the old pages for the GPU until the buffer goes (measured: the GPU still reads the old data, the CPU sees zeros). A guest that unmaps and remaps under a pool it never finalized would see the two diverge, which Horizon does not allow.
+- **Found on:** [Pokémon Scarlet](../../dm/games/0100A3D008C5C000/README.md), one A/B on its 180 s route on the Mac: peak footprint 4,540 → 3,775 MiB, guest charged 1,809 → 1,372 MiB, 30 fps held. 437 MiB of the footprint drop is guest memory; the other 328 MiB is not explained. [Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md) on its 95 s route: footprint flat (4,935 → 4,969 MiB), guest charged 1,887 → 1,685 MiB, with the baseline's pages partly compressed, so that drop is less certain. Open: the iPhone and Z-A, whose shader libraries were stale, were not measured.
 
 ### `GetInfo(UserExceptionContextAddress)` returns a real buffer
 
