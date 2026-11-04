@@ -1,5 +1,14 @@
 # Packing
 
+## Game packages
+
+### PFS0 file-name table missing its final NUL
+
+- **Symptom:** package identification stops with `ValueError: subsection not found` in `pfs0_names`, or LibHac reports `ResultFsPathNotFound` opening the last file of an NSP.
+- **Cause:** older NSZ writers omitted the final NUL in the PFS0 string table. The final name is bounded by the table length, but the Python scanner required a terminator and LibHac reads names as NUL-terminated strings.
+- **Fix:** the scanner accepts the table boundary as the end of the final name. `nx_extract` supplies LibHac with a virtual header containing the missing NUL followed by the original payload storage. File offsets remain relative to that payload, and the source package and encrypted NCA bytes are unchanged. Truncated tables and out-of-table name offsets still fail. Synthetic package tests cover both readers and payload preservation.
+- **Found on:** Moving Out 2 (`010065D018172000`), base 1.1.254 NSP and update 1.3.315 NSZ. Package reading was checked, not gameplay.
+
 ## Build tools
 
 ### Homebrew .NET is on PATH but apphosts cannot find the runtime
@@ -22,6 +31,13 @@
 - **Cause:** the launcher `dmsh_xlate` is universal, but `dmsh_xlate.dll` beside it was arm64-only (`PE32+`, machine `0xAA64`). A .NET build for a runtime ID (`-r osx-arm64`) sets an executable's `PlatformTarget` to that architecture unless the project names one, and the repository had no single command for rebuilding the translator, so the bundled dll flipped between AnyCPU and arm64 from one rebuild to the next. The Ryujinx libraries stayed AnyCPU, because a library does not take its architecture from the runtime ID.
 - **Fix:** `dmsh_xlate.csproj` pins `<PlatformTarget>AnyCPU</PlatformTarget>`, so a build with any `-r`, or none, gives an AnyCPU dll (`PE32`, machine `0x14C`, IL only). `dm/tools/tests/test_xlate_anycpu.py` reads the PE/CLI headers of every dll in `dmsh_xlate_bin` and the launcher's Mach-O header, and fails when a dll is tied to an architecture or the launcher lacks x86_64 or arm64; it needs no .NET. The rebuilt translator writes the same SPIR-V and reflection files as the arm64-only one (9,556 shaders compared byte for byte).
 - **Found on:** an Intel MacBook Pro building any game ([GitHub issue #803](https://github.com/seedds/nxnative/issues/803), which bisected the flips). Applies to every game.
+
+### The Vulkan shader step fails with `Argument list too long: 'xcrun'`
+
+- **Symptom:** `vk_shaders.py` stops with `OSError: [Errno 7] Argument list too long: 'xcrun'` after the Metal compiles, in the `metallib` link.
+- **Cause:** `metallib()` passed every `.air` file as an absolute path in one command. The NSP script runs it with `TMPDIR` set to the work folder, so each path holds that folder's name; a game with thousands of generated modules (Super Mario Galaxy: 3,083 captured shaders, more with the dual-source variants) under a long NSP folder name exceeds macOS's 1 MB `ARG_MAX`.
+- **Fix:** `metallib()` runs from the files' common folder with relative paths and an absolute output path, so the command length no longer depends on the work folder's name.
+- **Found on:** [Super Mario Galaxy](../../dm/games/010099C022B96000/README.md), with its dump in a folder named after both games of the cartridge. Applies to every Vulkan game's shader step.
 
 ## IPA archives
 
@@ -123,6 +139,13 @@
 - **Cause:** the same AppleDouble files as above. The module, shader, pipeline and font globs of `selected_inputs` took `._<name>` for a module or a library, and a `._x.patched.bin` has no `x.fixups.tsv` beside it. `shutil.copy2` of the host tried to set the copy's flags on a file system without extended attributes (`chflags: Operation not permitted`), and `cp -R` carried a folder's sidecars into the bundle, where `DMModuleFiles` listed them. `codesign` then read the `._nxnative` beside the launcher as a nested code object that is not signed and refused the whole bundle. Signing also sets an attribute on what it signs, so the sidecar comes back after a successful signature.
 - **Fix:** `dm/mac/pack_app.py` `detritus()` drops those names from `selected_inputs`, so neither the pack nor `DMModuleFiles` sees them. `copy()` passes `-X` where it copies and not where it clones (`cp` refuses the two together), and the host goes through `shutil.copy` instead of `copy2`, so a copy creates none of them. `strip_detritus()` runs before `codesign` reads the staged bundle, runs again after `xattr -cr` when `codesign` still refuses one, and runs once more after signing. On APFS nothing changes: no sidecar exists there, and the two passes are a stat walk. `dm/tools/tests/test_nsp_mac_app.py` puts a `._` file in every input folder and checks that it is not selected, does not reach the bundle, and is not in `DMModuleFiles`.
 - **Found on:** the NX2Apple fork's users, packing Mac apps on an external drive ([LNPANDY/NX2Apple#486](https://github.com/LNPANDY/NX2Apple/issues/486)); reproduced on an exFAT disk image made with `hdiutil create -fs ExFAT`, where the same inputs pack, sign and pass `codesign --verify --strict` with the change and stop three ways without it. Applies to every game's Mac app.
+
+### External shader directories contain AppleDouble metadata
+
+- **Symptom:** on an exFAT or FAT drive, shader splitting stops with `ValueError: not a version 2 shader code archive` or `[RED] /glslc_capture/._…: no GLSLC output`.
+- **Cause:** `shader_split.py` selected captured `.glslc` programs and decoded `.ushaderbytecode` archives by extension alone. macOS AppleDouble sidecars retain that extension, but their `._<name>` files contain metadata rather than shader bytes.
+- **Fix:** exclude `._` names when listing both external shader directories, including `DM_GLSLC_CAPTURE` and `DM_UE_SHADERS` overrides. Other dot-prefixed names remain valid inputs, and malformed real inputs still fail their normal validation.
+- **Found on:** an external-drive build reported in [issue #229's follow-up](https://github.com/seedds/nxnative/issues/229#issuecomment-6563450365). That commenter used a different, unnamed game; this fixes the sidecar failure, not the original Metroid Prime 4 port.
 
 ## Compressed inputs
 

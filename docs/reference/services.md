@@ -51,8 +51,9 @@ Most service calls can be found before they crash, before the first boot or the 
 
 - **Symptom:** abort in `sm::Initialize` under `sf::hipc::InitializeHipcServiceResolution`, right after the first frames (from `main+0x5b8198`).
 - **Cause:** `main` links its own clients of `olsc:u` (cloud save data backup settings) and `npns` (push notifications), which talk HIPC through `sm` and `svcSendSyncRequest`. For each user the game asks whether backup is on and switches it off where it is (`main+0x2809c8c`); a failed connect aborts as well.
-- **Fix:** `hle_sf.c` takes over the SDK's HIPC client entry points (`InitializeHipcServiceResolution`, `ConnectToHipcService`, `SendSyncRequest`, `CloseClientSessionHandle` and the control requests `QueryPointerBufferSize`, `ConvertSessionToDomain`, `DuplicateSession(Ex)`): a service it serves (`olsc:u`) gets a host session, and every request on it succeeds with zeroed output, which reads as backup off for every user. Any other name is refused with a red line, as `sm` refuses a service nobody registered (`npns` was never connected). `DM_SF_TRACE=1` dumps each request.
-- **Found on:** [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md) (SDK 20.5.4).
+- **Fix:** `hle_sf.c` takes over the SDK's HIPC client entry points (`InitializeHipcServiceResolution`, `ConnectToHipcService`, `SendSyncRequest`, `CloseClientSessionHandle` and the control requests `QueryPointerBufferSize`, `ConvertSessionToDomain`, `DuplicateSession(Ex)`): a service it serves (`olsc:u`, the capture services below) gets a host session, and every request on it succeeds with zeroed output, which reads as backup off for every user. Any other name is refused with a red line, as `sm` refuses a service nobody registered (`npns` was never connected). `DM_SF_TRACE=1` dumps each request.
+- **Capture services:** Super Smash Bros. Ultimate links clients of `caps:su` and `caps:u` (screenshots and clips) and aborts with `Result=0xe15` when `sm` refuses them at the start of its single-player mode. The host has no album, so `caps:su`, `caps:u`, `caps:a`, `caps:c`, `caps:sc` and `caps:ss` get host sessions too: a list reads as empty and a save does nothing.
+- **Found on:** [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md) (SDK 20.5.4); [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md) (capture services).
 
 ## SDK names that changed between versions
 
@@ -62,7 +63,7 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Cause:** older SDKs export other names for the same calls.
 - **Fix:** hook both generations. SDK 12 names: `ListAudioDeviceName` / `GetActiveAudioDeviceName`, singular `hid::GetNpadState`, `OpenDefaultAudioOut`. SDK 11 names: `fs::CommitSaveData(mount)` is the older name of `fs::Commit`.
 - **Found on:** [Metroid Dread](../../dm/games/010093801237C000/README.md) (SDK 11 names).
-- **Note:** overloads change too: SDK 18's `nn::hid::InitializeTouchScreen(int, int)` ([Super Mario Galaxy](../../dm/games/010099C022B96000/README.md), [SDK calls that open a system service through sm](#sdk-calls-that-open-a-system-service-through-sm)), SDK 19's `LoadModule` with one more bool ([`nn::ro` and its port](#nnro-and-its-port)), and `vi::CreateLayer` with the layer's size ([Absolum](../../dm/games/0100A83022A22000/README.md), [`vi::CreateLayer` with the layer's size](#vicreatelayer-with-the-layers-size)).
+- **Note:** overloads change too: SDK 18's `nn::hid::InitializeTouchScreen(int, int)` ([Super Mario Galaxy](../../dm/games/010099C022B96000/README.md), [SDK calls that open a system service through sm](#sdk-calls-that-open-a-system-service-through-sm)), SDK 19's `LoadModule` with one more bool ([`nn::ro` and its port](#nnro-and-its-port)), and `vi::CreateLayer` with the layer's size ([Absolum](../../dm/games/0100A83022A22000/README.md), [`vi::CreateLayer` with the layer's size](#vicreatelayer-with-the-layers-size)). SDK 19's `fs::MountRom(const char *, int, void *, size_t)` and `fs::QueryMountRomCacheSize(size_t *, int)` take a program index (Metroid Prime 4: Beyond's boot, `[RED] sf: the game connects to service fsp-srv itself`): the host has one RomFS, so index 0 mounts it and any other index logs a red line.
 
 ### SDK 4's `friends::GetBlockedUserList` without a `Uid`
 
@@ -301,6 +302,13 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) (1.9.0): motion aiming on a Mac with a DualSense. The iOS paths have not been tested on a device.
 - **Note:** history entries repeat the newest sample; yaw drifts as on the console, with no recenter. The console's own sensor still reports no states ([SDK 20 six-axis sensor and amiibo (`nfp`) calls](#sdk-20-six-axis-sensor-and-amiibo-nfp-calls)), so motion follows the controller in docked mode.
 - **Open:** [PR #286](https://github.com/seedds/nxnative/pull/286) has iPad aiming measurements and calibration controls to compare on a device before choosing shared defaults. Related reports: [#153](https://github.com/seedds/nxnative/issues/153), [#389](https://github.com/seedds/nxnative/issues/389).
+
+### Non-finite motion samples
+
+- **Symptom:** a non-finite accelerometer or gyro sample corrupts the six-axis fields; later valid samples do not restore the previous fusion state.
+- **Cause:** `motion_update` published raw NaN/Infinity and integrated it into persistent angle/orientation. Finite but extreme rates can also overflow the float rotation norm or accumulated angle.
+- **Fix:** reject a non-finite sensor sample before priming or changing any state. A non-finite time step skips integration, and a non-finite gain disables tilt correction. Do not commit an overflowing rotation step or angle; normal finite samples keep the same arithmetic and coordinate conventions.
+- **Found on:** synthetic `t_motion` samples, not a reproduced game or controller fault. Tests cover each sensor axis before/after priming, subsequent valid input, invalid timing/gain, finite overflow, all 48 signed frame maps and small-angle accumulation. No device or gameplay result is claimed for this change.
 
 ### The phone's motion in the picture's frame
 

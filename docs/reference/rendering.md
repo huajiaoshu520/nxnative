@@ -305,6 +305,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Check:** `DM_NVN_PASSDUMP` prints these views as `V <pass> c<i> view format …`; Mario uses only this one (1 of 80 passes in a course frame).
 - **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md).
 
+### Textures of an sRGB / linear pair over the same storage
+
+- **Symptom:** a movie (or another picture the game converts each frame) does not show: the screen keeps the last 3D frame while the decoder delivers every picture. A pass dump shows a pass writing one serial and the composite sampling another serial of the same size, the two Metal formats `RGBA8Unorm` (70) and `RGBA8Unorm_sRGB` (71).
+- **Cause:** the game makes two NVN texture objects over the same pool and offset with the same description but for the format, `RGBA8` (0x25) and `RGBA8_SRGB` (0x38): it renders into the linear one and samples the sRGB one, which on NVN share their bytes. The storage-sharing table is keyed by pool, offset and the whole description ([Transient render targets shared by storage](#transient-render-targets-shared-by-storage)), so each got its own Metal texture and the sampled one never changed.
+- **Fix:** `tex_mtl_` (`nvn_mtl.m`): a texture that misses the table, but whose description differs from a shared texture's only by the other format of an sRGB / linear pair (`g_pfv_srgb`, the pairs Metal views without `PixelFormatView` usage), is a Metal view of that texture in its own format (2D and 2D array, single-sample). Other format changes keep their own texture. A usage upgrade (`tex_upgrade`) asked through the view upgrades its parent and makes the view again on it; a view whose parent left the sharing table (upgraded through its own serial, taken over, evicted) is dropped at its next lookup and made again on what holds the storage now (log line `stale sRGB / linear view dropped`).
+- **Check:** `make -C dm/gfx/tests GAME=<id> check_t_srgb_alias` (Metal validation): the sRGB texture is a view of the linear one, pixels written through the linear texture read back through the sRGB one, an `R32F` texture over the same storage keeps its own; after the linear texture is upgraded the view reads the upgraded storage, and an upgrade through the view upgrades the parent.
+- **Found on:** Mario Kart World (`0400C3F00006E000`; its profile is a separate pull request): the Grand Prix's cup opening movie (2560x1440: the YUV pass writes ser 31381 `RGBA8`, the composite samples ser 31382 `RGBA8_SRGB`, both at offset 0 of a 15 MB pool).
+
 ### Render-target use added on demand
 
 - **Symptom:** a clear of, or a format-converting copy into, a texture made without render-target use is declined.
@@ -429,6 +437,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Cause:** NVN clears obey the scissor and the clear's own channel or stencil write mask, and can come between draws, while a Metal load action clears a whole attachment at the start of a pass.
 - **Fix:** such clears are drawn as one triangle over the pass in the open render encoder (`clear_color_tri` / `clear_ds_tri` in `nvn_mtl.m`, adapted from MacNativeGames, MIT). The pipeline has the pass's formats, the clear's mask as the write mask of its slot and no writes to the other slots. Depth is `ALWAYS` (and written for a depth clear), stencil `REPLACE` through the clear's write mask, the scissor is clamped as for draws, and visibility counting is off for the triangle. The value comes from the frame arena through the triangle's own argument tables, and the draws' tables are put back after it. A clear outside a pass opens the pass as a draw would. Clears a load action can express keep it. Two cases are still cleared whole, logged once: a depth / stencil clear with a scissor outside a pass, and a partial stencil write mask.
 - **Found on:** [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md): it issues the first whole-cleared case (a depth clear scissored to 8×8 of a 64×64 target), and so does Wonder ([Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md)). With `render_cond` ([Conditional rendering evaluated at replay](#conditional-rendering-evaluated-at-replay)) TOTK's scissored colour clears are all skipped; without it they are 50×50 tiles of a 500×400 target cleared to opaque black, about five a frame. [Metroid Dread](../../dm/games/010093801237C000/README.md) logged the red line once while loading on its smoke route.
+
+### A depth clear over the whole target with a partial stencil mask
+
+- **Symptom:** a pass loads a whole depth/stencil target every frame only to clear it: Donkey Kong Bananza clears a 2880x1620 Depth32F-S8 target with stencil mask `0x1`, before any pass is open, and loads 22.8 MB a frame for it.
+- **Cause:** any stencil mask other than 0 or 0xff takes `clear_ds_tri`, for depth too, and the triangle's pass loads both planes.
+- **Fix:** with no pass open and a depth clear that covers the whole target, the depth half is the next pass's load action (`OP_CLEAR_DS` in `nvn_mtl.m`), and only the stencil is drawn. A clear that is partial in either sense, or made with a pass open, keeps the triangle for both.
+- **Check:** `t_clear_ds`: the depth and stencil planes after a masked stencil clear with a full depth clear, outside and inside a pass.
+- **Found on:** [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md) ([issue #1138](https://github.com/seedds/nxnative/issues/1138)): on an M2 MacBook Air the pass went from 346 to 284 µs of GPU time and its load from 22.8 MB to 4.6 MB a frame.
 
 ### Depth16 load-clears match fragment writes
 
@@ -873,6 +889,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 
 ## Uniforms, copies and ordering
 
+### Bindless handles read from guest memory directly
+
+- **Symptom:** a `sample` of the submit thread shows `ubo_read` calling `-[MTLBuffer contents]` with `objc_retainAutorelease` at every handle read, and `objc_autoreleasePoolPop` at commit draining those buffers. Fire Emblem Fortune's Weave: about 4 % of the submit thread in the reads and as much again in the drain.
+- **Cause:** `contents` is an inner-pointer method, so under ARC each call retains and autoreleases the buffer; a bindless shader reads dozens of handles a draw. The argument writes in `encode_args_` asked the arena's buffer for its contents the same way.
+- **Fix:** `ubo_read` in `nvn_mtl.m`, for every game. A pool's buffer wraps guest memory without a copy at its own address (`mtl_pool_add` is the only place pools are made), so once `mtl_addr` finds the pool, the bytes are read at the guest address itself; `mtl_addr` still runs, so the pool check and its residency are unchanged. An arena keeps its buffer's `contents` (`NvArena.cpu`), and the argument, push-constant, driver-segment and border writes go through it. If pools ever stop being no-copy wrappers, this read would need the buffer again.
+- **Check:** `make -C dm/gfx/tests GAME=<id> run`. Fortune's Weave's battle map (MacBook Pro M1 Pro): submit 42.8k → 39.2k instructions per draw.
+- **Found on:** [Fire Emblem Fortune's Weave](../../dm/games/04007EF01F8AE000/README.md).
+
 ### Depth plane copies between depth formats
 
 - **Symptom:** `[RED] texture→texture copy case not implemented: 1920x1080x1→1920x1080x1 flags 0 format 260→252 3D 0→0`.
@@ -1219,6 +1243,13 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Cause:** Portal's `main` is SDL with its EGL video backend; it imports 20 EGL functions and names `glShaderSource` twice (SDL's GL renderer), but imports no NVN and draws nothing. The renderer is in the Source engine NROs: `materialsystem.nro` (with the D3D9 layer linked in) and `video_nx.nro` import `nvnBootstrapLoader` and draw with NVN.
 - **Fix:** `profile_guess.py` `shader_sources` now reads the imports of the loose NROs in the RomFS (`romfs_nro_imports`): when one imports `nvnBootstrapLoader`, the game is an NVN game whatever `main` imports. Digimon keeps the GL rule: it has no NRO. The survey, which has only a RomFS manifest, called Portal 2 an OpenGL game and left GLSLC out of its modules until `nx_extract --manifest` also wrote the RomFS's NROs (`romfs_nro/`, 60 MB for Portal 2's 21) for it to read the same way.
 - **Found on:** [Portal](../../dm/games/01007BB017812000/README.md); [Portal 2](../../dm/games/0100ABD01785C000/README.md) (the survey).
+
+### NVN and its own GLSLC under a main that also links EGL
+
+- **Symptom:** the NSP script took the game for an OpenGL one (`main imports EGL and names glShaderSource`) and translated 2 GL shaders; the game boots with sound and answers input, but the window stays black, and the log has `[nvn-mtl] [RED] shader … is not in the shader map` for every shader it makes, with no EGL call at all.
+- **Cause:** the engine links both paths. `main` imports 14 EGL functions and names `glShaderSource`, but also imports `nvnBootstrapLoader` and 8 GLSLC functions (`glslcCompile` among them, defined in `subsdk2`), holds 4 GLSL sources, and keeps the rest in its RomFS `.shader` files (RIFF `SHDR`, a `gl43` chunk with `#version 450` GLSL). On the Mac it draws with NVN and compiles every shader at run time with GLSLC; taken for OpenGL, it got no GLSLC capture.
+- **Fix:** `profile_guess.py` `shader_sources`: a `main` that imports `nvnBootstrapLoader` and `glslcCompile`, holds GLSL sources, and loads a module that defines `glslcCompile` is an NVN game whatever else it links, and gets the GLSLC capture as Three Houses does. Digimon keeps the GL rule (no GLSLC compile of its own); of 16 games extracted here (Super Mario Odyssey, Super Smash Bros. Ultimate, Metroid Dread, Hollow Knight: Silksong, Cuphead, DRAGON BALL FighterZ and others), only Rayman's decision changes. `test_nro_graphics.py` has both cases.
+- **Found on:** Rayman 30th Anniversary Edition (`01007C6025688000`, 1.0.0, SDK 20.5.15, Digital Eclipse): the capture gets 21 shaders in 30 s, the split makes 42, and it plays with picture and sound at 60 fps.
 
 ### Which GL functions a game calls
 
