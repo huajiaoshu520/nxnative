@@ -19,7 +19,7 @@ class Translated(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='ampere_mem_') as d:
             work = Path(d); (work / 'k.bin').write_bytes(code)
             # c0 layout (QueryAmpereComputeC0Layout): no uniform or storage buffers, 3 texture handles from 0x10, image handles from 0x28 (word 12 = image slot 1), 0x40 bytes
-            job = [dict(key='k', stage='cs', arch='sm86', code=str(work / 'k.bin'), tex={}, img={}, attr={}, fout={}, local=[32, 1, 1], debug=True, nvn2_cs=[0, 0, 3, 0x40, 0], **extra)]
+            job = [dict(key='k', stage='cs', arch='sm86', code=str(work / 'k.bin'), tex={}, img={}, attr={}, fout={}, local=[32, 1, 1], debug=True, nvn2_cs=extra.pop('nvn2_cs', [0, 0, 3, 0x40, 0]), **extra)]
             (work / 'jobs.json').write_text(json.dumps(job))
             r = subprocess.run([os.environ['DMSH_TEST_XLATE'], str(work / 'jobs.json'), d], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -56,6 +56,12 @@ class GuardedWrites(Translated):
         for code in ((0x000f4200081e0f04, 0x3000040702067f63), (0x000142000c1e03ff, 0x2000040400167f6c), (0x00014200001e0f12, 0x3800001002101364)):   # TLD4 and TXD through a uniform register, TLD4 through a register
             self.translate(inst(*code) + inst(*EXIT))
 
+    def test_gradients_through_a_uniform_register_keep_their_handle(self):
+        # UR4 = c3[0x10]; TXD through UR4 (write barrier 5); after waiting on it, the result atomically added to an image, so it stays. The translator takes its source 0 as the handle: without it, it could not find one and deleted the read
+        ur4, txd, used = (0x000fe20000000a00, 0x00c0040000047ab9), (0x000142000c1e03ff, 0x2000040400167f6c), (0x020ea200001ee000, 0x00000c16030c7593)
+        msl = self.translate(inst(*ur4) + inst(*txd) + inst(*used) + inst(*EXIT))
+        self.assertIn('gradient', msl)
+
 
 class Suatom(Translated):
     def test_handle_in_the_games_uniform_buffer(self):   # Unreal Engine 5.4 on the Switch 2 keeps every image in c[3]: the same word 12, in bank 3
@@ -79,9 +85,60 @@ class Suatom(Translated):
         self.assertIn('atomic_fetch_add', msl)   # native (the build's options) or through spirv-cross's buffer alias (these defaults)
         self.assertIn('cp_i_tcb_4A_r32ui', msl)   # image slot 1 (c2 0x128), a 32-bit unsigned image
 
+    def test_images_come_after_the_separate_handles(self):   # 1 texture, 1 separate texture, 1 separate sampler from 0x10: word 12 (0x30) is image slot 1 still, past both tables (Star Fox's 1002069a331ceded)
+        msl = self.translate(inst(*SUATOM) + inst(*EXIT), nvn2_cs=[0, 0, 1, 0x40, 0, 1, 1])
+        self.assertIn('cp_i_tcb_4A_r32ui', msl)
+
     def test_result_kept(self):   # the old value is the shader's (it shuffles it to the warp): the atomic's result is used, not discarded
         msl = self.translate(inst(*SUATOM) + inst(*EXIT))
         self.assertRegex(msl, r'uint \w+ = [^;]*atomic_fetch_add')
+
+
+class Bmsk(Translated):
+    """BMSK (Star Fox's 58046f286de779e1 +0x5a0, on registers the atomic reads): a mask of b bits from bit a. The form with c[4] sources keeps it from folding"""
+    MOVS = inst(0x000fe20000000f00, 0x0100000000037a02) + inst(0x000fe20000000f00, 0x0100010000047a02)   # R3 = c4[0], R4 = c4[4]
+    BMSK = (0x000fe40000000000, 0x000000040303721b)   # BMSK R3, R3, R4: clamping
+    WRAP = (0x000fe40000000800, 0x000000040303721b)   # the same, .W
+
+    def msl(self, op):
+        return self.translate(self.MOVS + inst(*op) + inst(*SUATOM) + inst(*EXIT))
+
+    def test_a_clamping_mask_tests_its_operands(self):
+        self.assertGreaterEqual(self.msl(self.BMSK).count('>= 32u'), 3)   # a + b, a, b
+
+    def test_a_wrapping_mask_tests_only_their_sum(self):
+        self.assertEqual(self.msl(self.WRAP).count('>= 32u'), 1)
+
+
+@unittest.skipUnless(os.environ.get('DMSH_TEST_XLATE'), 'set DMSH_TEST_XLATE to the offline translator')
+class PixelCovered(unittest.TestCase):
+    """0x925 as Star Fox's quad efficiency views encode it (826168691af2e211 +0x0): 1 for a covered pixel, 0 for a helper invocation"""
+    COVERED = (0x040e0200000e4000, 0x0000000000007925)
+    OTHER = (0x040e0200000e8000, 0x0000000000007925)   # bits 78..80 = 2, not seen
+    SPH = struct.pack('<32I', *([0x000c5482] + [0] * 4 + [0xb0000000] + [0] * 12 + [0xf] + [0] * 13))   # the game's: writes colour 0
+
+    def run_job(self, op):
+        with tempfile.TemporaryDirectory(prefix='ampere_px_') as d:
+            work = Path(d); (work / 'k.bin').write_bytes(self.SPH + inst(*op) + inst(*EXIT))
+            (work / 'jobs.json').write_text(json.dumps([dict(key='k', stage='ps', arch='sm86', code=str(work / 'k.bin'), tex={}, img={}, attr={}, fout={}, debug=True)]))
+            r = subprocess.run([os.environ['DMSH_TEST_XLATE'], str(work / 'jobs.json'), d], capture_output=True, text=True)
+            if not (work / 'k.spv').exists(): return None, r.stdout + r.stderr
+            sys.path.insert(0, str(TOOLS)); import dmsh_geometry
+            dmsh_geometry.flatten_sets(work / 'k.spv')
+            m = subprocess.run([str(TOOLS / 'spirv_cross_bin/spirv-cross'), '--msl', '--msl-version', '20300', '--msl-argument-buffers', str(work / 'k.spv')], capture_output=True, text=True)
+            self.assertEqual(m.returncode, 0, m.stderr)
+            return m.stdout, r.stdout + r.stderr
+
+    def test_reads_the_helper_invocation(self):
+        msl, log = self.run_job(self.COVERED)
+        self.assertIsNotNone(msl, log)
+        self.assertIn('simd_is_helper_thread()', msl)
+        self.assertRegex(msl, r'\? 0 : 1;')   # helper 0, covered 1
+
+    def test_another_form_is_refused(self):
+        msl, log = self.run_job(self.OTHER)
+        self.assertIsNone(msl)
+        self.assertIn('0x925 form 2', log)
 
 
 class MufuF16(Translated):

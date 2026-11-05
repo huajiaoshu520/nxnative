@@ -47,6 +47,13 @@
 - **Fix:** `metallib()` runs from the files' common folder with relative paths and an absolute output path, so the command length no longer depends on the work folder's name.
 - **Found on:** [Super Mario Galaxy](../../dm/games/010099C022B96000/README.md), with its dump in a folder named after both games of the cartridge. Applies to every Vulkan game's shader step.
 
+### The split shader tables differ from a game profile's
+
+- **Symptom:** the shader split stops with `the split shader tables differ from game profile <id>'s`, on the game version the profile registers.
+- **Cause:** the check compares the split's data rows with the profile's byte for byte, so it stops for either of two reasons: other game files, or a change to `shader_split.py` that reads the same files differently. A profile's tables can only be split again where its game files are, so continuous integration cannot catch the second reason.
+- **Fix:** the error shows each differing table's row counts and its first row on each side. For a splitter change, check that the new rows are right, then copy the tables from `shader/pkg.partial/tables` in the build folder into the profile. A change to the splitter's output also needs the other profiles it reaches split again.
+- **Found on:** [Splatoon Raiders](../../dm/games/0400380020056000/README.md) ([issue #1263](https://github.com/seedds/nxnative/issues/1263)): [NVN2 task and mesh shaders](shaders.md#nvn2-task-and-mesh-shaders) moved one row from vertex to mesh. Donkey Kong Bananza, Pokemon Pokopia and Hyrule Warriors: Age of Imprisonment were checked and hold no such shader; Fire Emblem Fortune's Weave was not checked, as no dump was at hand.
+
 ## IPA archives
 
 ### A streamed file changes size and the IPA fails its CRC check
@@ -92,6 +99,20 @@
 - **Cause:** folder extraction followed by a separate image pack duplicates the work; ordinary filesystem APIs cannot address files inside an image.
 - **Fix:** the NSP pipeline passes `--romfs-image` to `nx_extract`. LibHac layers the update over the base and checks its integrity while the writer streams file bytes into a temporary `DMROMFS1` image, appends the sorted directory index and publishes by rename. ExeFS remains expanded; RomFS and each DLC remain one physical file. `dm/tools/romfs.py` gives the scanners read-only virtual paths, bounded seeks and archive mappings (Python 3.12+), without changing the process's standard filesystem APIs. The IPA packer maps the physical image to `Payload/DmIOS.app/romfs.img`; iOS and the Mac launcher validate and mount it in place. Neither installation nor startup expands the resource files. Documents overrides and legacy folder inputs remain supported. A source image is uncompressed; the IPA can deflate it, so file-count reduction does not imply a smaller installed byte count. Full images for separate game versions cannot share unchanged individual files through APFS clones as legacy folder extraction did.
 - **Found on:** [ANIMAL WELL](../../dm/games/010020D01AD24000/README.md#files), whose direct image is an empty root (56 bytes); the local Baba Is You provisional build exercises 6,374 files in a 103,473,292-byte image, 131 shaders and an unsigned IPA containing only the single image entry. [Raging Loop](../../dm/games/010020400E1C2000/README.md#files-and-shaders) supplies Unity resources: all 1,473 source manifest entries match the image, and every registered shader remains in the scan. Synthetic integration tests call the actual LibHac writer, read unaligned archive ranges, and exercise IPA mapping, Xcode staging and bundled-image startup.
+
+### A build folder holds hundreds of thousands of small files
+
+- **Symptom:** a game's `<id>_build` folder is slow to count, copy or delete: Metroid Dread's held 160,331 files in 48,782 folders, 84,541 of them in the compile cache.
+- **Cause:** the compile cache (`shader/cache/cas`) keeps a few files per shader, and Xcode's derived data (`ipa/build/ios/pkg/dd`) over a thousand. Both are needed to make the next build fast, and only while a build runs.
+- **Fix:** `dm/tools/tree_tar.py` keeps each as one uncompressed tar beside where the folder was. `build_shaders` unpacks the cache only when `dmsh_build.py` will run, and packs it after pruning; the NSP script does the same for the derived data around `build_ipa.sh`. Keeping real folders during the build leaves `dmsh_build.py`, its chain version and Xcode unchanged. A build folder from before this converts by itself. Restored files keep their times, and Xcode's incremental build holds across the round trip (1 file compiled, against 262 for a full build). A build that stops leaves the folder, and a damaged tar costs only the cache it held. `regress.py`'s chain builds share the cache under the same lock. The cost is time on each build that runs the step, and a cache that no longer shares its libraries' blocks through APFS clones. The shader libraries (`b-<chain>`) stay folders: the host reads them one by one.
+- **Found on:** [ANIMAL WELL](../../dm/games/010020D01AD24000/README.md#found-on-this-game) (the round trip) and [Metroid Dread](../../dm/games/010093801237C000/README.md#found-on-this-game) (84,541 cache files: 51 s to pack, 22 s to restore on a T7).
+
+### A work folder holds millions of small files
+
+- **Symptom:** a game's `<id>-work` folder is too slow to count: Tears of the Kingdom's held 8,893,028 files and 509 GB, and its count ran past ten minutes.
+- **Cause:** `regress.py` kept one whole shader build per chain version in `regress/chain` (45 there; Breath of the Wild held 57), and agents' investigations leave folders nothing reads again (`build` alone over 351,000 files).
+- **Fix:** `prune_chains` in `scripts/regress.py` removes chain builds after each chain step, beyond the 3 used last, any used within 24 hours and those of the 3 newest stored baselines; a check that needs one builds it again. `tree_tar.pack_quiet` packs each other top-level folder untouched for 14 days, with 100 files or more, into `<name>.tar` at the end of an NSP script or `regress.py` run. These tars keep extended attributes, so a RomFS folder's case-collision names survive, and `tar --xattrs -xf` restores them (plain `tar -xf` does not). It frees no space beyond the chain builds: a folder of APFS clones can take more as a tar, so each tar must fit with 20 GB to spare. A player's NSP folder has no work folder.
+- **Found on:** [Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md#found-on-this-game).
 
 ### The zstd command given a path inside the image
 
