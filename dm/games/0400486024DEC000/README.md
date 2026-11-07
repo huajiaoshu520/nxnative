@@ -73,10 +73,12 @@ From an empty save: at about 45 s `A` (title), `A` (New Game), then the movie. F
 - `nn::codec AV1: busy (result 3603), a packet refused with 12 pictures waiting` (4 lines a run): the decoder's queue is full and the movie library retries, as it is written to ([a refusal is no fault](../../../docs/reference/movies.md#the-submission-ready-event-counted-as-packets)); movies play. It was a red line until then.
 - The `pipeline archive` red line is [issue 342](https://github.com/seedds/nxnative/issues/342), a limit of this system build. `c1_full.tsv is stale` holds on partial libraries, which no full build has stamped.
 - The "Navi" name label in the Great Deku Tree scene was missing on an earlier chain and has not been checked since. Not played yet: the Deku Tree dungeon, combat, later areas. Sound opens with no red line; movies and speech were not listened to. Physics issues reported in PR 1299 were not seen on this route (walking, the ladder, the camera).
+- Resolved: dotted horizontal rows across the picture in play, in fog and light (GitHub issue 1537): the agl_ndsr_vr networks' HMMA calls outside a chain overwrote an accumulator a chain held ([An HMMA outside a chain overwrote the chain's accumulator](../../../docs/reference/shaders.md#an-hmma-outside-a-chain-overwrote-the-chains-accumulator)), since chain 23a1ea1db092; found by bisecting chains on the Kokiri Forest autosave (0f510fd5's chain clean, bd9f422d's not). Under the game's upscaler they had also grown into white blotches: [LDSM reads rows other lanes stored](../../../docs/reference/shaders.md#ldsm-reads-rows-other-lanes-stored).
 - No iOS shader build or iPhone run has been done. Its memory use makes an iPhone unlikely as it stands.
 
 ## Found on this game
 
+- [Uncompressed storage beside storage the GPU writes](../../../docs/reference/nvn-objects.md#uncompressed-storage-beside-storage-the-gpu-writes): resolved, the ground opening in holes after walking out of a cave and back (the terrain's height and blend maps came out as zeros once the first normal map had been drawn into their pool); a reload had hidden it.
 - [A damaged file in a NUP or a dump has no hash to fail](../../../docs/reference/packing.md#a-damaged-file-in-a-nup-or-a-dump-has-no-hash-to-fail): a contributor's NUP held three `.zs` textures beginning with zeros, and the background loader reloaded the fairy fountain model for ever (412% CPU); this repository's copy has none.
 - [A control section's words read as a BAHS entry](../../../docs/reference/shaders.md#a-control-sections-words-read-as-a-bahs-entry): six map rows that were no shaders, one of them failing the build; `tera_common` gave its variation pairs once its row was gone.
 - [Freeing a memory pool during a texture ID walk](../../../docs/reference/nvn-objects.md#freeing-a-memory-pool-during-a-texture-id-walk): the `-[NvPkg buffer]: unrecognized selector` crash after a save or a scene change.
@@ -94,10 +96,13 @@ From an empty save: at about 45 s `A` (title), `A` (New Game), then the movie. F
 - [Task and mesh shaders in BNSH, and indirect mesh draws](../../../docs/reference/shaders.md#task-and-mesh-shaders-in-bnsh-and-indirect-mesh-draws)
 - [Indirect task / mesh draws on the encode thread](../../../docs/reference/rendering.md#indirect-task--mesh-draws-on-the-encode-thread): the iOS app aborted when a save loaded.
 - [F2IP](../../../docs/reference/shaders.md#f2ip)
+- [An HMMA outside a chain overwrote the chain's accumulator](../../../docs/reference/shaders.md#an-hmma-outside-a-chain-overwrote-the-chains-accumulator): dotted rows across fog and light in play.
+- [LDSM reads rows other lanes stored](../../../docs/reference/shaders.md#ldsm-reads-rows-other-lanes-stored): white blotches over Kokiri Forest through agl's upscaler on an M4 Pro.
 - [A shader that writes a whole frame through raw global memory](../../../docs/reference/frame-rate.md#a-shader-that-writes-a-whole-frame-through-raw-global-memory)
 - [Memory pools nothing gave an address to stay out of the raw pool table](../../../docs/reference/memory.md#memory-pools-nothing-gave-an-address-to-stay-out-of-the-raw-pool-table)
 - [Shaders report which textures they read through a pool](../../../docs/reference/memory.md#shaders-report-which-textures-they-read-through-a-pool)
 - [Repeated GPU out-of-memory failures end the game](../../../docs/reference/memory.md#repeated-gpu-out-of-memory-failures-end-the-game)
+- [A GPU whose access macOS revoked stops the game](../../../docs/reference/rendering.md#a-gpu-whose-access-macos-revoked-stops-the-game): after a GPU hang or page faults (issue #1326), nothing was drawn for about 70 s before the game aborted, and in full screen WindowServer's watchdog killed it.
 - [Texture IDs of one storage share one packaged texture](../../../docs/reference/nvn-objects.md#texture-ids-of-one-storage-share-one-packaged-texture)
 - [Finalizing a copy of a texture object](../../../docs/reference/nvn-objects.md#finalizing-a-copy-of-a-texture-object)
 - [Dynamic resolution that never moves, and draw passes that wait for each other](../../../docs/reference/frame-rate.md#dynamic-resolution-that-never-moves-and-draw-passes-that-wait-for-each-other)

@@ -140,6 +140,24 @@ class Suatom(Translated):
         self.assertRegex(msl, r'uint \w+ = [^;]*atomic_fetch_add')
 
 
+class MufuTurns(Translated):
+    """MUFU.SIN / COS take turns and use their fraction: the lowering takes t - rint(t) before the 2pi multiply (Donkey Kong Bananza's SSAO a6f04605183d9915 rotates its kernel by up to
+    2.5e6 turns at its full-size effects; t * 2pi lost the fraction and Metal's fast sin / cos returned 0 past 2^20 turns, a screen corner with no ambient occlusion). The values are checked on
+    the GPU by dm/gfx/tests/t_mufu_turns.m"""
+    COS = (0x000fe60000000000, 0x0000000c000c7308)   # MUFU.COS R12, R12 (op 0, bits 74..80), the F16 form's encoding above without .F16 and the half select
+    SIN = (0x000fe60000000400, 0x0000000c000c7308)   # MUFU.SIN R12, R12 (op 1)
+
+    def lowered(self, mufu, fn):
+        msl = self.translate(inst(*mufu) + inst(*SUATOM) + inst(*EXIT))
+        # R12 is never written here, so the argument is the constant 0.0; the debug build's arithmetic goes through spirv-cross's precise helpers (spvFSub, spvFMul)
+        m = re.search(r'float (_\d+) = rint\(([\w.]+)\);\s*float (_\d+) = (?:spvFSub\(\2, \1\)|\2 - \1);\s*float (_\d+) = (?:spvFMul\(\3, 6\.283185482025146484375\)|\3 \* 6\.283185482025146484375);'
+                      r'\s*float _\d+ = ' + fn + r'\(\4\);', msl)
+        self.assertTrue(m, msl)
+
+    def test_cos(self): self.lowered(self.COS, 'cos')
+    def test_sin(self): self.lowered(self.SIN, 'sin')
+
+
 class Bmsk(Translated):
     """BMSK (Star Fox's 58046f286de779e1 +0x5a0, on registers the atomic reads): a mask of b bits from bit a. The form with c[4] sources keeps it from folding"""
     MOVS = inst(0x000fe20000000f00, 0x0100000000037a02) + inst(0x000fe20000000f00, 0x0100010000047a02)   # R3 = c4[0], R4 = c4[4]
@@ -381,6 +399,16 @@ class Shared(Translated):
     def test_ldsm_mode_is_not_a_scale(self):
         msl = self.msl(mov(3, 0x40), inst(*self.LDSM_MT88), sts(0x20, 20))
         self.assertIn('spvSubgroupShuffle(8.96831', msl)   # the address 0x40 as a float's bits; scaled, it would be 0x100 (3.5873e-43)
+
+    # LDSM reads rows other lanes stored, often with no BAR before it (Ocarina of Time's movie networks and its scene's compute: dotted rows, other places each run): a SIMD-group
+    # barrier before its reads, so the stores have landed, and one after, so no lane's next store reaches the rows before every lane has read them (GitHub issue #1537, PR #1376)
+    def test_ldsm_reads_between_subgroup_barriers(self):
+        msl = self.msl(mov(3, 0x40), inst(*self.LDSM_MT88), sts(0x20, 20))
+        barriers = [m.start() for m in re.finditer(r'simdgroup_barrier\(mem_flags::mem_threadgroup\)', msl)]
+        reads = [m.start() for m in re.finditer(r'spvSubgroupShuffle\(', msl)]
+        store = msl.index('[8] = ')   # the STS after it: byte 0x20, word 8
+        self.assertEqual(len(barriers), 2, msl)
+        self.assertTrue(reads and barriers[0] < reads[0] and reads[-1] < barriers[1] < store, msl)
 
 
 class Pokopia(Translated):
